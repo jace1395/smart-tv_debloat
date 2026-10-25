@@ -98,7 +98,7 @@ smart-tv_debloat/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/jacehenriques/smart-tv_debloat.git
+git clone https://github.com/jace1395/smart-tv_debloat.git
 cd smart-tv_debloat
 ```
 
@@ -174,5 +174,5 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## Author
 
 **Jace Cadwy Henriques**  
-- GitHub: [@jacehenriques](https://github.com/jacehenriques)  
+- GitHub: [@jace1395](https://github.com/jace1395)  
 - Email: [jacehenriques07@gmail.com](mailto:jacehenriques07@gmail.com)
