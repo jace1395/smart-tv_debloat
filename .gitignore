@@ -1,0 +1,64 @@
+# ==========================================
+# Environment & Sensitive Credentials
+# ==========================================
+.env
+*.env
+!.env.example
+
+# ==========================================
+# Android & Gradle Build Artifacts
+# ==========================================
+**/build/
+**/.gradle/
+**/intermediates/
+**/outputs/
+**/.android/
+local.properties
+*.apk
+*.ap_
+*.aab
+*.dex
+
+# ==========================================
+# Binary Installers & Large Archives
+# ==========================================
+*.exe
+*.msi
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# ==========================================
+# Python Bytecode & Environments
+# ==========================================
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+*.egg-info/
+.pytest_cache/
+
+# ==========================================
+# IDE & Editor Configurations
+# ==========================================
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Diagnostics, Dumps & Logs
+# ==========================================
+*.log
+*.tmp
+uidump*.xml
+app_picker_dump*.xml
+screen*.png
+screen*.jpg
