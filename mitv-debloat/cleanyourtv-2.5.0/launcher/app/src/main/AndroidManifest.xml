@@ -96,6 +96,12 @@
             android:taskAffinity=""
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.NoDisplay" />
+        <activity
+            android:name=".WebStreamActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
         <!-- Home button for remotes that send KEYCODE_ALL_APPS (Xiaomi). Opt-in: HOME_KEY_SERVICE=1
              build-and-install.sh; see HomeKeyService. -->
         <service

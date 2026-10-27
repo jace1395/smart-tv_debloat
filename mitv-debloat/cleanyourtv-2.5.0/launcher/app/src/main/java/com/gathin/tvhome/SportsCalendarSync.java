@@ -40,6 +40,8 @@ import java.util.concurrent.Executors;
 public final class SportsCalendarSync {
     private static final String TAG = "SportsCalendarSync";
     private static final String F1_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/racing/f1/scoreboard";
+    private static final String JOLPICA_CURRENT_URL = "https://api.jolpi.ca/ergast/f1/current.json";
+    private static final String JOLPICA_SEASON_URL = "https://api.jolpi.ca/ergast/f1/%d.json";
     private static final String ISL_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/ind.1/scoreboard";
     private static final String CALENDAR_FILE = "dynamic_sports_calendar.json";
 
@@ -227,57 +229,225 @@ public final class SportsCalendarSync {
     }
 
     private static void fetchF1Events(JSONArray targetArray, Set<String> seenEvents) {
+        String liveTopDrivers = "";
+        String activeEspnEventName = "";
         try {
             String f1Resp = fetchUrl(F1_SCOREBOARD_URL);
-            if (f1Resp == null) return;
-            JSONObject f1Json = new JSONObject(f1Resp);
-
-            JSONArray events = f1Json.optJSONArray("events");
-            if (events != null && events.length() > 0) {
-                JSONObject event = events.optJSONObject(0);
-                parseF1Event(event, targetArray, seenEvents);
-            }
-
-            // Also check upcoming F1 calendar dates
-            JSONArray leagues = f1Json.optJSONArray("leagues");
-            if (leagues != null && leagues.length() > 0) {
-                JSONObject league = leagues.optJSONObject(0);
-                JSONArray calendar = league != null ? league.optJSONArray("calendar") : null;
-                if (calendar != null) {
-                    Instant now = Instant.now();
-                    int upcomingCount = 0;
-                    for (int i = 0; i < calendar.length() && upcomingCount < 6; i++) {
-                        JSONObject calObj = calendar.optJSONObject(i);
-                        if (calObj == null) continue;
-                        String startDate = calObj.optString("startDate", "");
-                        String endDate = calObj.optString("endDate", "");
-                        if (endDate.isEmpty() && !startDate.isEmpty()) endDate = startDate;
-                        if (endDate.isEmpty()) continue;
-
-                        try {
-                            Instant endInst = Instant.parse(endDate);
-                            if (endInst.isAfter(now)) {
-                                String dateParam = startDate.length() >= 10 ? startDate.substring(0, 10).replace("-", "") : "";
-                                if (!dateParam.isEmpty()) {
-                                    String dateUrl = F1_SCOREBOARD_URL + "?dates=" + dateParam;
-                                    String dateResp = fetchUrl(dateUrl);
-                                    if (dateResp != null) {
-                                        JSONObject dateJson = new JSONObject(dateResp);
-                                        JSONArray dEvents = dateJson.optJSONArray("events");
-                                        if (dEvents != null && dEvents.length() > 0) {
-                                            parseF1Event(dEvents.optJSONObject(0), targetArray, seenEvents);
-                                        }
-                                    }
-                                }
-                                upcomingCount++;
-                            }
-                        } catch (Exception ignored) {}
-                    }
+            if (f1Resp != null) {
+                JSONObject f1Json = new JSONObject(f1Resp);
+                JSONArray events = f1Json.optJSONArray("events");
+                if (events != null && events.length() > 0) {
+                    JSONObject event = events.optJSONObject(0);
+                    activeEspnEventName = cleanGrandPrixName(event.optString("name", ""));
+                    liveTopDrivers = extractEspnTopDrivers(event);
                 }
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error fetching F1 events: " + e.getMessage());
+            Log.w(TAG, "Error checking ESPN F1 scoreboard: " + e.getMessage());
         }
+
+        boolean jolpicaSuccess = false;
+        try {
+            int currentYear = LocalDate.now(ZoneId.of("UTC")).getYear();
+            jolpicaSuccess = fetchJolpicaSeason(JOLPICA_CURRENT_URL, targetArray, seenEvents, liveTopDrivers, activeEspnEventName);
+
+            // Multi-season auto rollover:
+            // When current season's races are all finished (e.g. after December 2026),
+            // automatically fetch the 2027 calendar so the TV never runs dry!
+            if (shouldFetchNextSeason(targetArray)) {
+                String nextSeasonUrl = String.format(Locale.ROOT, JOLPICA_SEASON_URL, currentYear + 1);
+                fetchJolpicaSeason(nextSeasonUrl, targetArray, seenEvents, "", "");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error fetching Jolpica F1 calendar: " + e.getMessage());
+        }
+
+        // Fallback: If Jolpica was unreachable, parse from ESPN scoreboard directly
+        if (!jolpicaSuccess) {
+            try {
+                String f1Resp = fetchUrl(F1_SCOREBOARD_URL);
+                if (f1Resp != null) {
+                    JSONObject f1Json = new JSONObject(f1Resp);
+                    JSONArray events = f1Json.optJSONArray("events");
+                    if (events != null && events.length() > 0) {
+                        parseF1Event(events.optJSONObject(0), targetArray, seenEvents);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static boolean shouldFetchNextSeason(JSONArray targetArray) {
+        if (targetArray == null || targetArray.length() == 0) return true;
+        Instant now = Instant.now();
+        int upcomingCount = 0;
+        for (int i = 0; i < targetArray.length(); i++) {
+            JSONObject obj = targetArray.optJSONObject(i);
+            if (obj != null && "f1".equalsIgnoreCase(obj.optString("sport", ""))) {
+                JSONArray sessions = obj.optJSONArray("sessions");
+                if (sessions != null && sessions.length() > 0) {
+                    JSONObject lastSession = sessions.optJSONObject(sessions.length() - 1);
+                    String start = lastSession != null ? lastSession.optString("start", "") : "";
+                    try {
+                        Instant end = Instant.parse(start).plus(java.time.Duration.ofHours(3));
+                        if (end.isAfter(now)) {
+                            upcomingCount++;
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        return upcomingCount == 0;
+    }
+
+    private static boolean fetchJolpicaSeason(String url, JSONArray targetArray, Set<String> seenEvents,
+                                              String liveTopDrivers, String activeEventName) {
+        String resp = fetchUrl(url);
+        if (resp == null) return false;
+        try {
+            JSONObject root = new JSONObject(resp);
+            JSONObject mrData = root.optJSONObject("MRData");
+            if (mrData == null) return false;
+            JSONObject raceTable = mrData.optJSONObject("RaceTable");
+            if (raceTable == null) return false;
+            JSONArray races = raceTable.optJSONArray("Races");
+            if (races == null || races.length() == 0) return false;
+
+            for (int i = 0; i < races.length(); i++) {
+                JSONObject r = races.optJSONObject(i);
+                if (r == null) continue;
+                String roundStr = r.optString("round", "0");
+                int round = 0;
+                try { round = Integer.parseInt(roundStr); } catch (Exception ignored) {}
+                String raceName = r.optString("raceName", "Grand Prix");
+                String cleanedName = cleanGrandPrixName(raceName);
+
+                String eventKey = "f1_" + r.optString("season", "") + "_" + round + "_" + cleanedName;
+                if (seenEvents.contains(eventKey)) continue;
+
+                JSONObject circuit = r.optJSONObject("Circuit");
+                JSONObject loc = circuit != null ? circuit.optJSONObject("Location") : null;
+                String place = loc != null ? loc.optString("locality", "") : "";
+                if (place.isEmpty() && circuit != null) {
+                    place = circuit.optString("circuitName", "");
+                }
+
+                JSONArray sessions = new JSONArray();
+                addJolpicaSession(sessions, r.optJSONObject("FirstPractice"), "FP1");
+                addJolpicaSession(sessions, r.optJSONObject("SecondPractice"), "FP2");
+                addJolpicaSession(sessions, r.optJSONObject("ThirdPractice"), "FP3");
+                addJolpicaSession(sessions, r.optJSONObject("SprintQualifying"), "SPRINT QUALI");
+                addJolpicaSession(sessions, r.optJSONObject("Sprint"), "SPRINT");
+                addJolpicaSession(sessions, r.optJSONObject("Qualifying"), "QUALIFYING");
+
+                String date = r.optString("date", "");
+                String time = r.optString("time", "15:00:00Z");
+                if (!date.isEmpty()) {
+                    if (time.isEmpty()) time = "15:00:00Z";
+                    JSONObject raceSession = new JSONObject();
+                    raceSession.put("name", "RACE");
+                    raceSession.put("start", date + "T" + time);
+                    sessions.put(raceSession);
+                }
+
+                if (sessions.length() == 0) continue;
+
+                List<JSONObject> sessionList = new ArrayList<>();
+                for (int s = 0; s < sessions.length(); s++) {
+                    sessionList.add(sessions.getJSONObject(s));
+                }
+                Collections.sort(sessionList, Comparator.comparing(a -> a.optString("start", "")));
+                JSONArray sortedSessions = new JSONArray();
+                for (JSONObject sObj : sessionList) {
+                    sortedSessions.put(sObj);
+                }
+
+                String raceDrivers = "";
+                if (!liveTopDrivers.isEmpty() && !activeEventName.isEmpty()
+                        && (cleanedName.toLowerCase(Locale.ROOT).contains(activeEventName.toLowerCase(Locale.ROOT))
+                        || activeEventName.toLowerCase(Locale.ROOT).contains(cleanedName.toLowerCase(Locale.ROOT)))) {
+                    raceDrivers = liveTopDrivers;
+                }
+
+                JSONObject raceObj = new JSONObject();
+                raceObj.put("round", round);
+                raceObj.put("name", cleanedName);
+                raceObj.put("place", place);
+                raceObj.put("sport", "f1");
+                raceObj.put("top_drivers", raceDrivers);
+                raceObj.put("is_postponed", false);
+                raceObj.put("sessions", sortedSessions);
+
+                targetArray.put(raceObj);
+                seenEvents.add(eventKey);
+            }
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to parse Jolpica JSON from " + url, e);
+            return false;
+        }
+    }
+
+    private static void addJolpicaSession(JSONArray sessions, JSONObject sObj, String sessionName) {
+        if (sObj == null) return;
+        String date = sObj.optString("date", "");
+        String time = sObj.optString("time", "12:00:00Z");
+        if (date.isEmpty()) return;
+        if (time.isEmpty()) time = "12:00:00Z";
+        try {
+            JSONObject s = new JSONObject();
+            s.put("name", sessionName);
+            s.put("start", date + "T" + time);
+            sessions.put(s);
+        } catch (Exception ignored) {}
+    }
+
+    private static String extractEspnTopDrivers(JSONObject event) {
+        if (event == null) return "";
+        JSONArray competitions = event.optJSONArray("competitions");
+        if (competitions == null || competitions.length() == 0) return "";
+        JSONObject latestCompletedComp = null;
+        for (int i = 0; i < competitions.length(); i++) {
+            JSONObject comp = competitions.optJSONObject(i);
+            if (comp == null) continue;
+            JSONObject statusObj = comp.optJSONObject("status");
+            JSONObject statusType = statusObj != null ? statusObj.optJSONObject("type") : null;
+            String state = statusType != null ? statusType.optString("state", "") : "";
+            if ("post".equalsIgnoreCase(state)) {
+                latestCompletedComp = comp;
+            }
+        }
+        if (latestCompletedComp == null) return "";
+
+        JSONObject typeObj = latestCompletedComp.optJSONObject("type");
+        String compName = typeObj != null ? typeObj.optString("abbreviation", typeObj.optString("text", "")) : "";
+        String prefix = normalizeSessionPrefix(compName);
+
+        JSONArray competitors = latestCompletedComp.optJSONArray("competitors");
+        if (competitors != null && competitors.length() > 0) {
+            StringBuilder sb = new StringBuilder();
+            if (!prefix.isEmpty()) {
+                sb.append(prefix).append(": ");
+            }
+            int count = Math.min(4, competitors.length());
+            for (int c = 0; c < count; c++) {
+                JSONObject compObj = competitors.optJSONObject(c);
+                if (compObj == null) continue;
+                int order = compObj.optInt("order", c + 1);
+                JSONObject athlete = compObj.optJSONObject("athlete");
+                String driverName = "";
+                if (athlete != null) {
+                    driverName = athlete.optString("shortName", athlete.optString("displayName", ""));
+                }
+                if (driverName.isEmpty()) {
+                    driverName = compObj.optString("displayName", "Driver " + order);
+                }
+                if (c > 0) sb.append(" \u00B7 ");
+                sb.append("P").append(order).append(" ").append(driverName);
+            }
+            return sb.toString();
+        }
+        return "";
     }
 
     private static void parseF1Event(JSONObject event, JSONArray targetArray, Set<String> seenEvents) {
