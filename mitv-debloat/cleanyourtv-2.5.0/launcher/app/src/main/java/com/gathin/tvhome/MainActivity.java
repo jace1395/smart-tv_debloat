@@ -483,6 +483,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // tvOS layout: push the dock row towards the bottom of the screen, leaving room for
         // rows_below_dock grid rows under it; the rest of the grid stays below until you press Down.
         int rowsBelowDock = cfg.rowsBelowDock;
+        if (racePanel != null) {
+            racePanel.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+                if ((b - t) != (ob - ot) || (r - l) != (or - ol)) {
+                    grid.post(grid::requestLayout);
+                }
+            });
+        }
         grid.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
             int h = b - t;
             // Item height follows the tile size, which follows the columns and the rows that must fit (AppAdapter.tileWidthPx).
@@ -494,7 +501,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // Keep the hero below the header when the library is enabled on a short screen,
             // even when the theme requests an extra visible row below the dock.
             int shelfClearance = cfg.appLibrary ? hero.getMeasuredHeight() + (int) (40 * density) : 0;
-            int want = Math.max(shelfClearance, h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
+            int panelClearance = 0;
+            if (racePanel != null && racePanel.getVisibility() == View.VISIBLE) {
+                if (racePanel.getHeight() > 0) {
+                    int[] pLoc = new int[2];
+                    racePanel.getLocationInWindow(pLoc);
+                    int[] gLoc = new int[2];
+                    grid.getLocationInWindow(gLoc);
+                    int panelBottom = pLoc[1] + racePanel.getHeight();
+                    panelClearance = Math.max(0, panelBottom - gLoc[1] + (int) (26 * density));
+                } else {
+                    panelClearance = (int) (125 * density);
+                }
+            }
+            int want = Math.max(Math.max(shelfClearance, panelClearance),
+                    h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
             // Where the rows cannot fit even at the smallest tile (3 rows with the title on), the title keeps its
             // room above the dock and the last rows run off the bottom instead of the title drawing over the clock.
             if (MainActivity.this.dockRow && cfg.dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
@@ -2073,17 +2094,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     openSportStreamWithUrl(streamUrl);
                 });
             } else {
-                if (isPackageInstalled("com.formulaone.production")) {
-                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage("com.formulaone.production");
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(launchIntent);
-                        return;
-                    }
-                }
+                Toast.makeText(this, "Opening F1 Live Stream...", Toast.LENGTH_SHORT).show();
                 Intent webIntent = new Intent(this, WebStreamActivity.class);
-                webIntent.putExtra(WebStreamActivity.EXTRA_URL, "https://f1tv.formula1.com/");
-                webIntent.putExtra(WebStreamActivity.EXTRA_TITLE, "Formula 1 Live");
+                webIntent.putExtra(WebStreamActivity.EXTRA_URL, "https://westreamf1.st/stream");
+                webIntent.putExtra(WebStreamActivity.EXTRA_TITLE, "Formula 1 Live Stream");
                 startActivity(webIntent);
             }
         } catch (Exception e) {
@@ -2099,6 +2113,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateSportTabs();
         if (racePanel != null) {
             racePanel.setVisibility(View.VISIBLE);
+        }
+        if (grid != null) {
+            grid.post(grid::requestLayout);
         }
         if (selectedSport == SPORT_FOOTBALL) {
             // Render the scheduled/upcoming match IMMEDIATELY so tabs and text appear with zero delay
