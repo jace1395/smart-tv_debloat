@@ -361,16 +361,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         tabFootball = findViewById(R.id.tabFootball);
         tabF1 = findViewById(R.id.tabF1);
         btnSportWatch = findViewById(R.id.btnSportWatch);
-        View.OnKeyListener sportsDownKey = (v, keyCode, event) -> {
-            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                focusTile(lastFocused % COLUMNS);
-                return true;
-            }
-            return false;
-        };
         if (tabFootball != null) {
-            tabFootball.setOnKeyListener(sportsDownKey);
             tabFootball.setOnFocusChangeListener((v, hasFocus) -> {
                 if (hasFocus && selectedSport != SPORT_FOOTBALL) {
                     selectedSport = SPORT_FOOTBALL;
@@ -383,7 +374,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             });
         }
         if (tabF1 != null) {
-            tabF1.setOnKeyListener(sportsDownKey);
             tabF1.setOnFocusChangeListener((v, hasFocus) -> {
                 if (hasFocus && selectedSport != SPORT_F1) {
                     selectedSport = SPORT_F1;
@@ -400,7 +390,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             updateRace();
         });
         if (btnSportWatch != null) {
-            btnSportWatch.setOnKeyListener(sportsDownKey);
             btnSportWatch.setOnClickListener(v -> openSportStream());
         }
         if (raceHeadline != null) {
@@ -505,8 +494,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // Keep the hero below the header when the library is enabled on a short screen,
             // even when the theme requests an extra visible row below the dock.
             int shelfClearance = cfg.appLibrary ? hero.getMeasuredHeight() + (int) (40 * density) : 0;
-            int bottomRoom = rowsBelowDock > 0 ? (int) (AppAdapter.BOTTOM_ROOM_DP * density) : 0;
-            int want = Math.max(shelfClearance, h - dockRow - gridRows - bottomRoom);
+            int want = Math.max(shelfClearance, h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
             // Where the rows cannot fit even at the smallest tile (3 rows with the title on), the title keeps its
             // room above the dock and the last rows run off the bottom instead of the title drawing over the clock.
             if (MainActivity.this.dockRow && cfg.dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
@@ -520,21 +508,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             grid.post(this::refitGlass);
         });
 
-        // Keep the glass glued to its tile while the grid scrolls, and smoothly fade out sports panel when scrolling down.
+        // Keep the glass glued to its tile while the grid scrolls.
         grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
-                if (racePanel != null) {
-                    int scrollY = rv.computeVerticalScrollOffset();
-                    if (scrollY <= 0) {
-                        racePanel.setAlpha(1f);
-                        racePanel.setTranslationY(0f);
-                    } else {
-                        float alpha = Math.max(0f, 1f - scrollY / (45f * density));
-                        racePanel.setAlpha(alpha);
-                        racePanel.setTranslationY(-Math.min(scrollY, 25f * density));
-                    }
-                }
                 if (!glassShown) return;
                 glassTargetY -= dy;
                 glassScrollShift -= dy;
@@ -1243,9 +1220,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 else grid.smoothScrollBy(0, dy);
             }
             showHero(position, scroll ? r.top - dy : r.top);
-            if (racePanel != null) {
-                racePanel.animate().alpha(1f).translationY(0f).setDuration(200).start();
-            }
         } else {
             if (dockDecoration != null) {
                 dockDecoration.clearSelection();
@@ -1253,9 +1227,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // Below the dock (or in a plain grid) the glow follows the tile without the big name; letting it
             // fade out left the grid on plain black.
             showGlowOnly(position);
-            if (racePanel != null) {
-                racePanel.animate().alpha(0f).setDuration(160).start();
-            }
             // Scroll just enough so the whole glass (not only the tile) is visible.
             revealRect.set(0, -(int) pad * 2, item.getWidth(), item.getHeight() + (int) pad);
             grid.requestChildRectangleOnScreen(item, revealRect, reducedMotion);
@@ -1793,9 +1764,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
             if (position < COLUMNS) {
                 if (racePanel != null && racePanel.getVisibility() == View.VISIBLE && position < 2) {
-                    View targetTab = selectedSport == SPORT_F1 && tabF1 != null ? tabF1 : tabFootball;
-                    if (targetTab != null) {
-                        targetTab.requestFocus();
+                    if (tabFootball != null) {
+                        tabFootball.requestFocus();
                         grid.playSoundEffect(SoundEffectConstants.NAVIGATION_UP);
                         return true;
                     }
@@ -2023,13 +1993,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (btnSportWatch != null) {
             if (selectedSport == SPORT_FOOTBALL) {
                 btnSportWatch.setText("▶ STREAM ISL");
-                btnSportWatch.setNextFocusLeftId(R.id.tabFootball);
+                btnSportWatch.setNextFocusUpId(R.id.tabFootball);
             } else {
                 btnSportWatch.setText("▶ STREAM F1");
-                btnSportWatch.setNextFocusLeftId(R.id.tabF1);
+                btnSportWatch.setNextFocusUpId(R.id.tabF1);
             }
-            btnSportWatch.setNextFocusDownId(R.id.grid);
-            btnSportWatch.setNextFocusUpId(R.id.clock);
         }
     }
 
@@ -2105,10 +2073,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     openSportStreamWithUrl(streamUrl);
                 });
             } else {
-                Toast.makeText(this, "Opening F1 Live Stream...", Toast.LENGTH_SHORT).show();
+                if (isPackageInstalled("com.formulaone.production")) {
+                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage("com.formulaone.production");
+                    if (launchIntent != null) {
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(launchIntent);
+                        return;
+                    }
+                }
                 Intent webIntent = new Intent(this, WebStreamActivity.class);
                 webIntent.putExtra(WebStreamActivity.EXTRA_URL, "https://westreamf1.st/stream");
-                webIntent.putExtra(WebStreamActivity.EXTRA_TITLE, "Formula 1 Live Stream");
+                webIntent.putExtra(WebStreamActivity.EXTRA_TITLE, "Formula 1 Live");
                 startActivity(webIntent);
             }
         } catch (Exception e) {
@@ -2124,9 +2099,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateSportTabs();
         if (racePanel != null) {
             racePanel.setVisibility(View.VISIBLE);
-        }
-        if (grid != null) {
-            grid.post(grid::requestLayout);
         }
         if (selectedSport == SPORT_FOOTBALL) {
             // Render the scheduled/upcoming match IMMEDIATELY so tabs and text appear with zero delay
@@ -2275,10 +2247,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (!s.finished() && status == RaceWeekend.Status.DONE) {
                 continue;
             }
-            if (!firstItem) row.append("  ·  ");
+            if (!firstItem) row.append("     ");
             firstItem = false;
             int start = row.length();
-            row.append(session.shortName()).append(" ").append(when.format(session.start).toUpperCase(Locale.getDefault()));
+            row.append(session.shortName()).append("  ").append(when.format(session.start).toUpperCase(Locale.getDefault()));
             int color;
             switch (status) {
                 case DONE: color = 0x47FFFFFF; break;
