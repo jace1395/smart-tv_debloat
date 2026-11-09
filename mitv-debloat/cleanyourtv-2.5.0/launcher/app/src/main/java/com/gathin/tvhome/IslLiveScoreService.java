@@ -35,6 +35,7 @@ public class IslLiveScoreService {
         public String clockDetail = ""; // e.g. "59'", "HT", "FT"
         public String statusState = "";  // "in", "post", "pre"
         public String venue = "";
+        public String previousMatchSummary = ""; // e.g. "PREV: Inter Kashi 0 - 3 SC Delhi (FT)"
     }
 
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -138,12 +139,44 @@ public class IslLiveScoreService {
                 }
             }
 
+            // Find most recent completed match for previous score display
+            String prevSummary = "";
+            for (int i = 0; i < events.length(); i++) {
+                JSONObject ev = events.optJSONObject(i);
+                if (ev == null) continue;
+                JSONObject st = ev.optJSONObject("status");
+                JSONObject sty = st != null ? st.optJSONObject("type") : null;
+                String stState = sty != null ? sty.optString("state", "") : "";
+                if ("post".equalsIgnoreCase(stState)) {
+                    JSONArray comps = ev.optJSONArray("competitions");
+                    if (comps != null && comps.length() > 0) {
+                        JSONObject cmp = comps.optJSONObject(0);
+                        JSONArray cmps = cmp != null ? cmp.optJSONArray("competitors") : null;
+                        if (cmps != null && cmps.length() >= 2) {
+                            JSONObject k0 = cmps.optJSONObject(0);
+                            JSONObject k1 = cmps.optJSONObject(1);
+                            if (k0 != null && k1 != null) {
+                                JSONObject tm0 = k0.optJSONObject("team");
+                                JSONObject tm1 = k1.optJSONObject("team");
+                                String n0 = tm0 != null ? tm0.optString("shortDisplayName", tm0.optString("displayName", "")) : "";
+                                String n1 = tm1 != null ? tm1.optString("shortDisplayName", tm1.optString("displayName", "")) : "";
+                                String sc0 = k0.optString("score", "0");
+                                String sc1 = k1.optString("score", "0");
+                                prevSummary = "PREV: " + n0 + " " + sc0 + " - " + sc1 + " " + n1 + " (FT)";
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (selectedEvent == null) {
                 selectedEvent = events.optJSONObject(0);
             }
             if (selectedEvent == null) return null;
 
             LiveMatchInfo info = new LiveMatchInfo();
+            info.previousMatchSummary = prevSummary;
             JSONObject status = selectedEvent.optJSONObject("status");
             if (status != null) {
                 JSONObject stype = status.optJSONObject("type");

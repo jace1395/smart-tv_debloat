@@ -128,6 +128,41 @@
                 android:focusable="true"
                 android:clickable="true"
                 android:nextFocusLeft="@+id/tabFootball"
+                android:nextFocusRight="@+id/tabCameras"
+                android:nextFocusDown="@+id/btnSportWatch"
+                android:nextFocusUp="@+id/clock" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:text="|"
+                android:textColor="#4DFFFFFF"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tabCameras"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:background="@drawable/sports_tab_bg"
+                android:singleLine="true"
+                android:text="CAMERAS"
+                android:textColor="#70FFFFFF"
+                android:textSize="12sp"
+                android:fontFamily="@font/outfit_medium"
+                android:letterSpacing="0.22"
+                android:shadowColor="#D9000000"
+                android:shadowDx="0"
+                android:shadowDy="2"
+                android:shadowRadius="6"
+                android:focusable="true"
+                android:clickable="true"
+                android:nextFocusLeft="@+id/tabF1"
                 android:nextFocusRight="@+id/btnInputs"
                 android:nextFocusDown="@+id/btnSportWatch"
                 android:nextFocusUp="@+id/clock" />

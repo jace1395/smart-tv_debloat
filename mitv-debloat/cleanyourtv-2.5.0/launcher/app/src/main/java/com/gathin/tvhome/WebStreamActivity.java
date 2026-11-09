@@ -86,12 +86,19 @@ public class WebStreamActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 progressBar.setVisibility(View.GONE);
-                // Attempt to request high quality (1080p/720p) on web players
                 view.evaluateJavascript(
                     "(function() {" +
                     "  try {" +
                     "    if (window.yt && window.yt.player) { yt.player.setPlaybackQuality('hd1080'); }" +
-                    "    var v = document.querySelector('video'); if (v) { v.setAttribute('playsinline', ''); }" +
+                    "    function enhance() {" +
+                    "      var v = document.querySelector('video');" +
+                    "      if (v) {" +
+                    "        v.controls = true;" +
+                    "        v.setAttribute('playsinline', '');" +
+                    "      }" +
+                    "    }" +
+                    "    enhance();" +
+                    "    setInterval(enhance, 1500);" +
                     "  } catch(e) {}" +
                     "})()", null);
             }
@@ -139,6 +146,8 @@ public class WebStreamActivity extends Activity {
         }
         webView.loadUrl(streamUrl);
         webView.requestFocus();
+
+        android.widget.Toast.makeText(this, "Remote: [OK] Play/Pause \u00B7 [\u25B2] Fullscreen \u00B7 [\u25C0 \u25B6] \u00B110s", android.widget.Toast.LENGTH_LONG).show();
     }
 
     @Override
@@ -157,6 +166,49 @@ public class WebStreamActivity extends Activity {
             }
             if (webView.canGoBack()) {
                 webView.goBack();
+                return true;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            if (webView != null) {
+                webView.evaluateJavascript(
+                    "(function() {" +
+                    "  var v = document.querySelector('video');" +
+                    "  if (v) { if (v.paused) v.play(); else v.pause(); }" +
+                    "})()", null);
+                return true;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_MENU) {
+            if (webView != null) {
+                webView.evaluateJavascript(
+                    "(function() {" +
+                    "  var v = document.querySelector('video');" +
+                    "  if (v) {" +
+                    "    if (document.fullscreenElement || document.webkitFullscreenElement) {" +
+                    "      (document.exitFullscreen || document.webkitExitFullscreen).call(document);" +
+                    "    } else {" +
+                    "      (v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen).call(v);" +
+                    "    }" +
+                    "  }" +
+                    "})()", null);
+                return true;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+            if (webView != null) {
+                webView.evaluateJavascript(
+                    "(function() {" +
+                    "  var v = document.querySelector('video');" +
+                    "  if (v) { v.currentTime = Math.max(0, v.currentTime - 10); }" +
+                    "})()", null);
+                return true;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            if (webView != null) {
+                webView.evaluateJavascript(
+                    "(function() {" +
+                    "  var v = document.querySelector('video');" +
+                    "  if (v) { v.currentTime = Math.min((v.duration || 999999), v.currentTime + 10); }" +
+                    "})()", null);
                 return true;
             }
         }

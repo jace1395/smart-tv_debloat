@@ -3,6 +3,7 @@ package com.gathin.tvhome;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
@@ -146,9 +147,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private List<RaceWeekend.Race> raceCalendar;
     private View racePanel;
     private TextView raceKicker, raceHeadline, raceSessions, raceTopDrivers;
-    private TextView tabFootball, tabF1, btnSportWatch;
+    private TextView tabFootball, tabF1, tabCameras, btnSportWatch;
     private static final int SPORT_FOOTBALL = 0;
     private static final int SPORT_F1 = 1;
+    private static final int SPORT_CAMERAS = 2;
     private int selectedSport = SPORT_FOOTBALL;
     /** config.xml show_stats, overridable by a theme. Off: the line is gone and nothing is read. */
     private boolean showStats;
@@ -360,7 +362,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         raceTopDrivers = findViewById(R.id.raceTopDrivers);
         tabFootball = findViewById(R.id.tabFootball);
         tabF1 = findViewById(R.id.tabF1);
+        tabCameras = findViewById(R.id.tabCameras);
         btnSportWatch = findViewById(R.id.btnSportWatch);
+        View.OnKeyListener sportsDownKey = (v, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                focusTile(lastFocused % COLUMNS);
+                return true;
+            }
+            return false;
+        };
         if (tabFootball != null) {
             tabFootball.setOnFocusChangeListener((v, hasFocus) -> {
                 if (hasFocus && selectedSport != SPORT_FOOTBALL) {
@@ -385,11 +396,24 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 updateRace();
             });
         }
+        if (tabCameras != null) {
+            tabCameras.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus && selectedSport != SPORT_CAMERAS) {
+                    selectedSport = SPORT_CAMERAS;
+                    updateRace();
+                }
+            });
+            tabCameras.setOnClickListener(v -> {
+                selectedSport = SPORT_CAMERAS;
+                updateRace();
+            });
+        }
         SportsCalendarSync.syncCalendarAsync(this, () -> {
             raceCalendar = Config.load(this).raceCalendar;
             updateRace();
         });
         if (btnSportWatch != null) {
+            btnSportWatch.setOnKeyListener(sportsDownKey);
             btnSportWatch.setOnClickListener(v -> openSportStream());
         }
         if (raceHeadline != null) {
@@ -508,10 +532,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             grid.post(this::refitGlass);
         });
 
-        // Keep the glass glued to its tile while the grid scrolls.
+        // Keep the glass glued to its tile while the grid scrolls, and smoothly fade sports panel when scrolling down into grid.
         grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                if (racePanel != null) {
+                    int offset = rv.computeVerticalScrollOffset();
+                    if (offset <= 0) {
+                        racePanel.animate().cancel();
+                        racePanel.setAlpha(1f);
+                    } else {
+                        float a = Math.max(0f, 1f - (float) offset / (35f * density));
+                        racePanel.setAlpha(a);
+                    }
+                }
                 if (!glassShown) return;
                 glassTargetY -= dy;
                 glassScrollShift -= dy;
@@ -1205,6 +1239,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         View item = (View) card.getParent();
         if (dockRow && position < COLUMNS) {
+            if (racePanel != null) {
+                if (animations && !reducedMotion) racePanel.animate().alpha(1f).setDuration(180).start();
+                else racePanel.setAlpha(1f);
+            }
             if (dockDecoration != null) {
                 int color = adapter.ambientColorAt(position);
                 dockDecoration.setSelection(card, color, animations && !reducedMotion);
@@ -1221,6 +1259,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             showHero(position, scroll ? r.top - dy : r.top);
         } else {
+            if (racePanel != null) {
+                if (animations && !reducedMotion) racePanel.animate().alpha(0f).setDuration(150).start();
+                else racePanel.setAlpha(0f);
+            }
             if (dockDecoration != null) {
                 dockDecoration.clearSelection();
             }
@@ -1873,6 +1915,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             else card.requestFocus();
             return;
         }
+        if (dockRow && pos < COLUMNS) {
+            int offset = grid.computeVerticalScrollOffset();
+            if (offset > 0) {
+                if (!animations || reducedMotion) grid.scrollBy(0, -offset);
+                else grid.smoothScrollBy(0, -offset);
+            }
+        }
         // Not laid out yet: scroll there, then focus once the scroll settles.
         if (!animations) {
             grid.scrollToPosition(pos);
@@ -1990,13 +2039,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             tabF1.setActivated(active);
             tabF1.setTextColor(active ? 0xFFFFFFFF : 0x70FFFFFF);
         }
+        if (tabCameras != null) {
+            boolean active = selectedSport == SPORT_CAMERAS;
+            tabCameras.setActivated(active);
+            tabCameras.setTextColor(active ? 0xFFFFFFFF : 0x70FFFFFF);
+        }
         if (btnSportWatch != null) {
             if (selectedSport == SPORT_FOOTBALL) {
                 btnSportWatch.setText("▶ STREAM ISL");
                 btnSportWatch.setNextFocusUpId(R.id.tabFootball);
-            } else {
+            } else if (selectedSport == SPORT_F1) {
                 btnSportWatch.setText("▶ STREAM F1");
                 btnSportWatch.setNextFocusUpId(R.id.tabF1);
+            } else {
+                btnSportWatch.setText("▶ WATCH CAMERAS");
+                btnSportWatch.setNextFocusUpId(R.id.tabCameras);
             }
         }
     }
@@ -2065,6 +2122,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void openSportStream() {
         try {
+            if (selectedSport == SPORT_CAMERAS) {
+                showCameraPicker();
+                return;
+            }
             if (selectedSport == SPORT_FOOTBALL) {
                 Toast.makeText(this, "Opening English ISL stream (High Quality)...", Toast.LENGTH_SHORT).show();
                 String targetMatch = getActiveOrUpcomingMatchName();
@@ -2091,6 +2152,42 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
     }
 
+    private void showCameraPicker() {
+        final String[] options = new String[]{
+                "\u25B6 Quad View (All 4 Cameras Together)",
+                "Camera 1 (192.168.1.9 - Main)",
+                "Camera 2 (192.168.1.10)",
+                "Camera 3 (192.168.1.11)",
+                "Camera 4 (192.168.1.12)"
+        };
+
+        new AlertDialog.Builder(this)
+                .setTitle("Select IP Camera Live Feed")
+                .setItems(options, (dialog, which) -> {
+                    if (which == 0) {
+                        Intent quadIntent = new Intent(this, CameraQuadActivity.class);
+                        startActivity(quadIntent);
+                    } else {
+                        int camIndex = which - 1;
+                        playCameraStream(CameraQuadActivity.CAMS[camIndex][2], CameraQuadActivity.CAMS[camIndex][0]);
+                    }
+                })
+                .show();
+    }
+
+    private void playCameraStream(String rtspUrl, String camName) {
+        try {
+            Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
+            vlcIntent.setPackage("org.videolan.vlc");
+            vlcIntent.setDataAndType(Uri.parse(rtspUrl), "video/*");
+            vlcIntent.putExtra("title", camName);
+            vlcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(vlcIntent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Could not open VLC: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
     /**
      * Shows or hides the match panel for this minute. Text only, set once a minute with the clock:
      * nothing animates, so the panel costs the GPU nothing between ticks.
@@ -2107,21 +2204,38 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             IslLiveScoreService.fetchLiveScore(liveInfo -> {
                 if (isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())) return;
                 if (selectedSport != SPORT_FOOTBALL) return;
-                if (liveInfo != null && liveInfo.isLive) {
-                    SpannableString liveKicker = new SpannableString("\u25CF  LIVE \u00B7 " + liveInfo.clockDetail + " \u00B7 ISL \u00B7 " + liveInfo.matchName.toUpperCase(Locale.ROOT));
-                    liveKicker.setSpan(new ForegroundColorSpan(RACE_RED), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    raceKicker.setText(liveKicker);
+                if (liveInfo != null) {
+                    if (liveInfo.previousMatchSummary != null && !liveInfo.previousMatchSummary.isEmpty() && raceTopDrivers != null) {
+                        raceTopDrivers.setText(liveInfo.previousMatchSummary);
+                        raceTopDrivers.setVisibility(View.VISIBLE);
+                    }
+                    if (liveInfo.isLive) {
+                        SpannableString liveKicker = new SpannableString("\u25CF  LIVE \u00B7 " + liveInfo.clockDetail + " \u00B7 ISL \u00B7 " + liveInfo.matchName.toUpperCase(Locale.ROOT));
+                        liveKicker.setSpan(new ForegroundColorSpan(RACE_RED), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        raceKicker.setText(liveKicker);
 
-                    String scoreHeadline = liveInfo.homeTeam + "  " + liveInfo.homeScore + " - " + liveInfo.awayScore + "  " + liveInfo.awayTeam;
-                    raceHeadline.setText(scoreHeadline);
+                        String scoreHeadline = liveInfo.homeTeam + "  " + liveInfo.homeScore + " - " + liveInfo.awayScore + "  " + liveInfo.awayTeam;
+                        raceHeadline.setText(scoreHeadline);
 
-                    String sessionText = "MATCH IN PROGRESS" + (liveInfo.venue.isEmpty() ? "" : " \u00B7 " + liveInfo.venue.toUpperCase(Locale.ROOT));
-                    raceSessions.setText(sessionText);
+                        String sessionText = "MATCH IN PROGRESS" + (liveInfo.venue.isEmpty() ? "" : " \u00B7 " + liveInfo.venue.toUpperCase(Locale.ROOT));
+                        raceSessions.setText(sessionText);
 
-                    btnSportWatch.setText("\u25B6 STREAM ISL (LIVE)");
-                    racePanel.setVisibility(View.VISIBLE);
+                        btnSportWatch.setText("\u25B6 STREAM ISL (LIVE)");
+                    }
                 }
+                racePanel.setVisibility(View.VISIBLE);
             });
+            return;
+        } else if (selectedSport == SPORT_CAMERAS) {
+            if (raceKicker != null) raceKicker.setText("LIVE CCTV FEEDS \u00B7 TP-LINK TAPO (192.168.1.9 - 1.12)");
+            if (raceHeadline != null) raceHeadline.setText("IP Camera Feeds (VLC)");
+            if (raceTopDrivers != null) {
+                raceTopDrivers.setText("CAM 1: .9 \u00B7 CAM 2: .10 \u00B7 CAM 3: .11 \u00B7 CAM 4: .12");
+                raceTopDrivers.setVisibility(View.VISIBLE);
+            }
+            if (raceSessions != null) raceSessions.setText("LIVE RTSP STREAM \u00B7 VLC FOR ANDROID");
+            if (btnSportWatch != null) btnSportWatch.setText("\u25B6 WATCH CAMERAS");
+            if (racePanel != null) racePanel.setVisibility(View.VISIBLE);
             return;
         } else if (selectedSport == SPORT_F1) {
             renderScheduleCard();
@@ -2228,7 +2342,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (selectedSport == SPORT_F1 && race.topDrivers != null && !race.topDrivers.trim().isEmpty()) {
                 raceTopDrivers.setText(race.topDrivers.trim());
                 raceTopDrivers.setVisibility(View.VISIBLE);
-            } else {
+            } else if (selectedSport != SPORT_FOOTBALL && selectedSport != SPORT_CAMERAS) {
                 raceTopDrivers.setVisibility(View.GONE);
             }
         }
