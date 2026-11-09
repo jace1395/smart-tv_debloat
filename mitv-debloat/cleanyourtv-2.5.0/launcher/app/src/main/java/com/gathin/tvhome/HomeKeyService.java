@@ -6,8 +6,10 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -32,6 +34,17 @@ public class HomeKeyService extends AccessibilityService {
     private Map<Integer, String> appKeys = Collections.emptyMap();
 
     public static volatile String sCurrentPackage = "";
+
+    private static volatile boolean sSportzfyAutoPilot = false;
+    private static volatile long sSportzfyAutoPilotUntil = 0;
+    private static volatile int sAutoPilotStep = 0;
+
+    public static void startSportzfyAutoPilot() {
+        sSportzfyAutoPilot = true;
+        sSportzfyAutoPilotUntil = System.currentTimeMillis() + 45000;
+        sAutoPilotStep = 0;
+        Log.i(TAG, "Sportzfy Auto-Pilot engaged for Uncle");
+    }
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
@@ -166,6 +179,85 @@ public class HomeKeyService extends AccessibilityService {
             }
         }
 
+        if (sSportzfyAutoPilot && System.currentTimeMillis() < sSportzfyAutoPilotUntil) {
+            if ("com.blaze.sportzfy".equals(sCurrentPackage)) {
+                handleSportzfyAutoPilot();
+            }
+        }
+    }
+
+    private void handleSportzfyAutoPilot() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+        try {
+            // Step 0: Auto-dismiss annoying popups/dialogs if any appear
+            for (String dismissText : new String[]{"LATER", "Later", "CANCEL", "Cancel", "CLOSE", "Close", "DISMISS", "Dismiss", "NO THANKS", "No thanks", "SKIP", "Skip"}) {
+                List<AccessibilityNodeInfo> dismissNodes = root.findAccessibilityNodeInfosByText(dismissText);
+                if (dismissNodes != null && !dismissNodes.isEmpty()) {
+                    for (AccessibilityNodeInfo node : dismissNodes) {
+                        if (performClickOnNode(node)) {
+                            Log.i(TAG, "Sportzfy Auto-Pilot: Dismissed dialog via " + dismissText);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Step 1: Click stream server / link chips if on match player page
+            for (String serverText : new String[]{"Server 1", "Link 1", "English", "HD", "Stream 1", "Server", "Link"}) {
+                List<AccessibilityNodeInfo> serverNodes = root.findAccessibilityNodeInfosByText(serverText);
+                if (serverNodes != null && !serverNodes.isEmpty()) {
+                    for (AccessibilityNodeInfo node : serverNodes) {
+                        if (performClickOnNode(node)) {
+                            Log.i(TAG, "Sportzfy Auto-Pilot: Clicked stream server " + serverText);
+                            sSportzfyAutoPilot = false; // Successfully playing!
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Click Live Events section if not on live events
+            List<AccessibilityNodeInfo> liveTabs = root.findAccessibilityNodeInfosByText("Live Events");
+            if (liveTabs != null && !liveTabs.isEmpty() && sAutoPilotStep == 0) {
+                for (AccessibilityNodeInfo tab : liveTabs) {
+                    if (performClickOnNode(tab)) {
+                        Log.i(TAG, "Sportzfy Auto-Pilot: Clicked Live Events");
+                        sAutoPilotStep = 1;
+                        return;
+                    }
+                }
+            }
+
+            // Step 3: Click first active match card
+            List<AccessibilityNodeInfo> vsNodes = root.findAccessibilityNodeInfosByText(" vs ");
+            if (vsNodes == null || vsNodes.isEmpty()) {
+                vsNodes = root.findAccessibilityNodeInfosByText(" VS ");
+            }
+            if (vsNodes != null && !vsNodes.isEmpty()) {
+                for (AccessibilityNodeInfo node : vsNodes) {
+                    if (performClickOnNode(node)) {
+                        Log.i(TAG, "Sportzfy Auto-Pilot: Clicked live match card");
+                        sAutoPilotStep = 2;
+                        return;
+                    }
+                }
+            }
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private boolean performClickOnNode(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        AccessibilityNodeInfo current = node;
+        while (current != null) {
+            if (current.isClickable()) {
+                return current.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            }
+            current = current.getParent();
+        }
+        return false;
     }
 
     @Override
