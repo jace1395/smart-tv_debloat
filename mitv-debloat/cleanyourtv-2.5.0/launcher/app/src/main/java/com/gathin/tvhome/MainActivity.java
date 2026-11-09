@@ -2155,10 +2155,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void showCameraPicker() {
         final String[] options = new String[]{
                 "\u25B6 Quad View (All 4 Cameras Together)",
-                "Camera 1 (192.168.1.9 - Main)",
-                "Camera 2 (192.168.1.10)",
-                "Camera 3 (192.168.1.11)",
-                "Camera 4 (192.168.1.12)"
+                "Camera 1 (192.168.1.9) - Staircase",
+                "Camera 2 (192.168.1.10) - Balcony",
+                "Camera 3 (192.168.1.11) - Garage",
+                "Camera 4 (192.168.1.12) - Big Window",
+                "\u25B6 Open in VLC Player"
         };
 
         new AlertDialog.Builder(this)
@@ -2167,25 +2168,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     if (which == 0) {
                         Intent quadIntent = new Intent(this, CameraQuadActivity.class);
                         startActivity(quadIntent);
+                    } else if (which == 5) {
+                        playInVlc(0);
                     } else {
                         int camIndex = which - 1;
-                        playCameraStream(CameraQuadActivity.CAMS[camIndex][2], CameraQuadActivity.CAMS[camIndex][0]);
+                        Intent fullIntent = new Intent(this, CameraFullscreenActivity.class);
+                        fullIntent.putExtra(CameraFullscreenActivity.EXTRA_CAMERA_INDEX, camIndex);
+                        startActivity(fullIntent);
                     }
                 })
                 .show();
     }
 
-    private void playCameraStream(String rtspUrl, String camName) {
-        try {
-            Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
-            vlcIntent.setPackage("org.videolan.vlc");
-            vlcIntent.setDataAndType(Uri.parse(rtspUrl), "video/*");
-            vlcIntent.putExtra("title", camName);
-            vlcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(vlcIntent);
-        } catch (Exception e) {
-            Toast.makeText(this, "Could not open VLC: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        }
+    private void playInVlc(int camIndex) {
+        CameraQuadActivity.openInVlc(this, camIndex);
     }
 
     /**
@@ -2228,12 +2224,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         } else if (selectedSport == SPORT_CAMERAS) {
             if (raceKicker != null) raceKicker.setText("LIVE CCTV FEEDS \u00B7 TP-LINK TAPO (192.168.1.9 - 1.12)");
-            if (raceHeadline != null) raceHeadline.setText("IP Camera Feeds (VLC)");
+            if (raceHeadline != null) raceHeadline.setText("IP Camera Feeds (Quad & Fullscreen)");
             if (raceTopDrivers != null) {
-                raceTopDrivers.setText("CAM 1: .9 \u00B7 CAM 2: .10 \u00B7 CAM 3: .11 \u00B7 CAM 4: .12");
+                raceTopDrivers.setText("Staircase (.9) \u00B7 Balcony (.10) \u00B7 Garage (.11) \u00B7 Big Window (.12)");
                 raceTopDrivers.setVisibility(View.VISIBLE);
             }
-            if (raceSessions != null) raceSessions.setText("LIVE RTSP STREAM \u00B7 VLC FOR ANDROID");
+            if (raceSessions != null) raceSessions.setText("QUAD VIEW (4 CAMERAS) \u00B7 FULLSCREEN (ARROW KEYS)");
             if (btnSportWatch != null) btnSportWatch.setText("\u25B6 WATCH CAMERAS");
             if (racePanel != null) racePanel.setVisibility(View.VISIBLE);
             return;

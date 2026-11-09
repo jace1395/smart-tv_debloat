@@ -18,16 +18,19 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import androidx.media3.ui.PlayerView;
 
 public class CameraQuadActivity extends Activity {
 
     public static final String[][] CAMS = {
-            {"Camera 1 (192.168.1.9)", "rtsp://olavoh18:Olavo%40123@192.168.1.9:554/stream2", "rtsp://olavoh18:Olavo%40123@192.168.1.9:554/stream1"},
-            {"Camera 2 (192.168.1.10)", "rtsp://olavoh18:Olavo%40123@192.168.1.10:554/stream2", "rtsp://olavoh18:Olavo%40123@192.168.1.10:554/stream1"},
-            {"Camera 3 (192.168.1.11)", "rtsp://olavoh:Olavo%40123@192.168.1.11:554/stream2", "rtsp://olavoh:Olavo%40123@192.168.1.11:554/stream1"},
-            {"Camera 4 (192.168.1.12)", "rtsp://olavoh:Olavo%40123@192.168.1.12:554/stream2", "rtsp://olavoh:Olavo%40123@192.168.1.12:554/stream1"}
+            {"Camera 1 (192.168.1.9) - Staircase", "rtsp://olavoh18:pass@127.0.0.1:8554/stream2", "rtsp://olavoh18:pass@127.0.0.1:8554/stream1", "rtsp://olavoh18:Olavo%40123@192.168.1.9:554/stream1"},
+            {"Camera 2 (192.168.1.10) - Balcony", "rtsp://olavoh18:pass@127.0.0.1:8555/stream2", "rtsp://olavoh18:pass@127.0.0.1:8555/stream1", "rtsp://olavoh18:Olavo%40123@192.168.1.10:554/stream1"},
+            {"Camera 3 (192.168.1.11) - Garage", "rtsp://olavoh:pass@127.0.0.1:8556/stream2", "rtsp://olavoh:pass@127.0.0.1:8556/stream1", "rtsp://olavoh:Olavo%40123@192.168.1.11:554/stream1"},
+            {"Camera 4 (192.168.1.12) - Big Window", "rtsp://olavoh:pass@127.0.0.1:8557/stream2", "rtsp://olavoh:pass@127.0.0.1:8557/stream1", "rtsp://olavoh:Olavo%40123@192.168.1.12:554/stream1"}
     };
 
     private final ExoPlayer[] players = new ExoPlayer[4];
@@ -36,6 +39,8 @@ public class CameraQuadActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        RtspAuthProxy.startAll();
 
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
@@ -94,7 +99,7 @@ public class CameraQuadActivity extends Activity {
                 v.setScaleY(hasFocus ? 1.02f : 1.0f);
             });
 
-            cell.setOnClickListener(v -> openInVlc(index));
+            cell.setOnClickListener(v -> openFullscreen(index));
 
             PlayerView pv = new PlayerView(this);
             pv.setUseController(false);
@@ -118,12 +123,40 @@ public class CameraQuadActivity extends Activity {
             if (i < 2) rowTop.addView(cell);
             else rowBottom.addView(cell);
 
-            // Initialize player
+            // Initialize player with forced TCP for flawless Android TV RTSP decoding
             try {
                 ExoPlayer player = new ExoPlayer.Builder(this).build();
                 player.setVolume(0f); // Mute quad view to avoid sound clash
+
+                final TextView camLabel = label;
+                final int camIndex = i;
+                player.addListener(new Player.Listener() {
+                    @Override
+                    public void onRenderedFirstFrame() {
+                        if (camLabel != null) {
+                            camLabel.animate()
+                                    .alpha(0f)
+                                    .setDuration(400)
+                                    .withEndAction(() -> camLabel.setVisibility(View.GONE))
+                                    .start();
+                        }
+                    }
+
+                    @Override
+                    public void onPlayerError(PlaybackException error) {
+                        if (camLabel != null) {
+                            camLabel.setText(CAMS[camIndex][0] + " \u2022 Reconnecting...");
+                            camLabel.setVisibility(View.VISIBLE);
+                            camLabel.setAlpha(1f);
+                        }
+                    }
+                });
+
                 MediaItem mediaItem = MediaItem.fromUri(CAMS[i][1]); // Stream2 sub-stream
-                player.setMediaItem(mediaItem);
+                RtspMediaSource mediaSource = new RtspMediaSource.Factory()
+                        .setForceUseRtpTcp(true)
+                        .createMediaSource(mediaItem);
+                player.setMediaSource(mediaSource);
                 player.prepare();
                 player.play();
                 pv.setPlayer(player);
@@ -137,7 +170,7 @@ public class CameraQuadActivity extends Activity {
         root.addView(rowBottom);
         setContentView(root);
 
-        Toast.makeText(this, "Quad View: D-pad to select \u00B7 OK for 1080p Fullscreen in VLC", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "Quad View: D-pad to select \u00B7 OK for Fullscreen with Arrow Keys", Toast.LENGTH_LONG).show();
 
         // Focus first cell
         if (containers[0] != null) {
@@ -145,17 +178,23 @@ public class CameraQuadActivity extends Activity {
         }
     }
 
-    private void openInVlc(int index) {
+    private void openFullscreen(int index) {
+        Intent intent = new Intent(this, CameraFullscreenActivity.class);
+        intent.putExtra(CameraFullscreenActivity.EXTRA_CAMERA_INDEX, index);
+        startActivity(intent);
+    }
+
+    public static void openInVlc(android.content.Context ctx, int index) {
         try {
-            String hdUrl = CAMS[index][2];
+            String directHd = CAMS[index][3];
             Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
             vlcIntent.setPackage("org.videolan.vlc");
-            vlcIntent.setDataAndType(Uri.parse(hdUrl), "video/*");
+            vlcIntent.setDataAndType(Uri.parse(directHd), "video/*");
             vlcIntent.putExtra("title", CAMS[index][0] + " (1080p HD)");
             vlcIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(vlcIntent);
+            ctx.startActivity(vlcIntent);
         } catch (Exception e) {
-            Toast.makeText(this, "Could not open VLC: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Toast.makeText(ctx, "Could not open VLC: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -163,15 +202,26 @@ public class CameraQuadActivity extends Activity {
     protected void onPause() {
         super.onPause();
         for (ExoPlayer p : players) {
-            if (p != null) p.pause();
+            if (p != null) p.stop();
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        for (ExoPlayer p : players) {
-            if (p != null) p.play();
+        for (int i = 0; i < players.length; i++) {
+            ExoPlayer p = players[i];
+            if (p != null) {
+                try {
+                    MediaItem mediaItem = MediaItem.fromUri(CAMS[i][1]);
+                    RtspMediaSource mediaSource = new RtspMediaSource.Factory()
+                            .setForceUseRtpTcp(true)
+                            .createMediaSource(mediaItem);
+                    p.setMediaSource(mediaSource);
+                    p.prepare();
+                    p.play();
+                } catch (Exception ignored) {}
+            }
         }
     }
 
