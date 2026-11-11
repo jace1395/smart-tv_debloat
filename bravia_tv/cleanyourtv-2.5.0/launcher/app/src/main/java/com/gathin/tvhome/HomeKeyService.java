@@ -33,18 +33,8 @@ public class HomeKeyService extends AccessibilityService {
 
     public static volatile String sCurrentPackage = "";
     public static volatile String sCurrentStreamingMatch = null;
-    private android.content.BroadcastReceiver screenOnReceiver;
-    private final android.os.Handler matchCheckHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-    private static android.os.PowerManager.WakeLock matchWindowWakeLock;
-    private static long sLastAutoSwitchAttemptMs = 0;
-
-    private final Runnable matchCheckRunnable = new Runnable() {
-        @Override
-        public void run() {
-            checkAndTriggerLiveMatchWake(getApplicationContext());
-            matchCheckHandler.postDelayed(this, 60_000L); // Check every minute
-        }
-    };
+    private final android.os.Handler profileHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable profileCheckRunnable = this::checkAndSelectPreferredYtProfile;
 
     @Override
     protected void onServiceConnected() {
@@ -57,23 +47,7 @@ public class HomeKeyService extends AccessibilityService {
         settingsPanel = config.settingsKeyPanel;
         appKeys = RemoteKeys.parseAppKeys(config.appKeys);
 
-        // Start per-minute live match streaming check
-        matchCheckHandler.removeCallbacks(matchCheckRunnable);
-        matchCheckHandler.post(matchCheckRunnable);
-
-        // Register receiver for when TV turns ON, screen wakes up, or HDMI connects during a live match
-        android.content.IntentFilter filter = new android.content.IntentFilter();
-        filter.addAction(Intent.ACTION_SCREEN_ON);
-        filter.addAction(Intent.ACTION_USER_PRESENT);
-        filter.addAction("android.intent.action.HDMI_PLUGGED");
-        screenOnReceiver = new android.content.BroadcastReceiver() {
-            @Override
-            public void onReceive(android.content.Context context, Intent intent) {
-                Log.i(TAG, "Screen / HDMI woke up or turned ON (" + intent.getAction() + ")");
-                checkAndTriggerLiveMatchWake(context);
-            }
-        };
-        registerReceiver(screenOnReceiver, filter);
+        SmartMatchDirector.getInstance(this).attachAccessibilityService(this);
     }
 
     @Override
@@ -87,120 +61,9 @@ public class HomeKeyService extends AccessibilityService {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        matchCheckHandler.removeCallbacks(matchCheckRunnable);
-        if (matchWindowWakeLock != null && matchWindowWakeLock.isHeld()) {
-            try {
-                matchWindowWakeLock.release();
-            } catch (Exception ignored) {}
-            matchWindowWakeLock = null;
-        }
-        if (screenOnReceiver != null) {
-            try {
-                unregisterReceiver(screenOnReceiver);
-            } catch (Exception ignored) {}
-            screenOnReceiver = null;
-        }
+        profileHandler.removeCallbacks(profileCheckRunnable);
+        SmartMatchDirector.getInstance(this).getSportzfyAutoPilot().detach();
         if (instance == this) instance = null;
-    }
-
-    public static void checkAndTriggerLiveMatchWake(android.content.Context context) {
-        try {
-            SportsCalendarSync.syncCalendarAsync(context, null);
-            Config cfg = Config.load(context);
-            if (cfg == null || cfg.raceCalendar == null || cfg.raceCalendar.isEmpty()) return;
-
-            long nowMs = System.currentTimeMillis();
-            long windowStartMs = 5 * 60 * 1000L;   // 5 minutes before kickoff
-            long matchDurationMs = 125 * 60 * 1000L; // Match window: ~2 hours 5 minutes
-
-            boolean matchActive = false;
-            String activeMatchName = null;
-            long activeKickoff = 0;
-
-            for (RaceWeekend.Race r : cfg.raceCalendar) {
-                if (r.isPostponed || r.sessions == null) continue;
-                for (RaceWeekend.Session s : r.sessions) {
-                    long kickoffMs = s.start.toEpochMilli();
-                    if (nowMs >= (kickoffMs - windowStartMs) && nowMs <= (kickoffMs + matchDurationMs)) {
-                        matchActive = true;
-                        activeMatchName = r.name;
-                        activeKickoff = kickoffMs;
-                        break;
-                    }
-                }
-                if (matchActive) break;
-            }
-
-            if (!matchActive) {
-                // No match active right now. Release match window wakelock if held.
-                if (matchWindowWakeLock != null && matchWindowWakeLock.isHeld()) {
-                    try {
-                        matchWindowWakeLock.release();
-                        Log.i(TAG, "No active match window; released matchWindowWakeLock.");
-                    } catch (Exception ignored) {}
-                    matchWindowWakeLock = null;
-                }
-                return;
-            }
-
-            // A live match IS active! Hold CPU wakelock for the duration of the match window.
-            if (matchWindowWakeLock == null) {
-                android.os.PowerManager pm = (android.os.PowerManager) context.getSystemService(android.content.Context.POWER_SERVICE);
-                if (pm != null) {
-                    matchWindowWakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "bravia:MatchActiveWindowLock");
-                    matchWindowWakeLock.acquire(130 * 60 * 1000L); // Safety cap 130 min
-                    Log.i(TAG, "Acquired matchWindowWakeLock for active match: " + activeMatchName);
-                }
-            }
-
-            // Check if this specific active match is already streaming
-            boolean isMatchChanged = sCurrentStreamingMatch == null || !sCurrentStreamingMatch.equalsIgnoreCase(activeMatchName);
-            boolean isStreaming = !isMatchChanged && isStreamingAppInForeground(context);
-
-            if (!isStreaming) {
-                // Prevent duplicate rapid re-launches within 45 seconds
-                if (nowMs - sLastAutoSwitchAttemptMs < 45_000L) {
-                    return;
-                }
-                sLastAutoSwitchAttemptMs = nowMs;
-                sCurrentStreamingMatch = activeMatchName;
-
-                Log.i(TAG, "Per-minute check: Live match in progress (" + activeMatchName + "), but streaming app not in foreground or match changed. Switching to Fire Stick and opening stream!");
-
-                // 1. Wake screen if off or in standby
-                android.os.PowerManager pm = (android.os.PowerManager) context.getSystemService(android.content.Context.POWER_SERVICE);
-                if (pm != null && !pm.isInteractive()) {
-                    android.os.PowerManager.WakeLock wl = pm.newWakeLock(
-                            android.os.PowerManager.FULL_WAKE_LOCK | android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP | android.os.PowerManager.ON_AFTER_RELEASE,
-                            "bravia:MatchAutoWakeScreen"
-                    );
-                    wl.acquire(15_000);
-                }
-
-                // 2. Multi-Burst HDMI 1 Active Source (switches Sony TV from Tata Sky HDMI 2 to Fire Stick HDMI 1)
-                MatchAutoWakeReceiver.assertHdmiActiveSource(context);
-
-                // 3. Bring MainActivity to front with auto-switch flag to resolve and open the live stream
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    Intent matchIntent = new Intent(context, MainActivity.class);
-                    matchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    matchIntent.putExtra("extra_auto_switched_for_match", true);
-                    context.startActivity(matchIntent);
-                }, 1500L);
-            } else {
-                // Stream is already actively in foreground on Fire Stick!
-                // Re-assert HDMI Active Source silently (without performHome or starting activities)
-                // This guarantees Sony TV switches from Tata Sky to HDMI 1 without touching or minimizing playback!
-                MatchAutoWakeReceiver.assertHdmiActiveSourceSilent(context);
-                if (instance != null) {
-                    instance.checkAndSelectOlavoProfile();
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Error checking live match wake: " + e.getMessage());
-        }
     }
 
     public static boolean isStreamingAppInForeground(android.content.Context context) {
@@ -210,7 +73,7 @@ public class HomeKeyService extends AccessibilityService {
                 android.view.accessibility.AccessibilityNodeInfo root = instance.getRootInActiveWindow();
                 if (root != null && root.getPackageName() != null) {
                     String rootPkg = root.getPackageName().toString().toLowerCase();
-                    if (rootPkg.contains("youtube") || rootPkg.contains("sonyliv") || rootPkg.contains("webstream")) {
+                    if (rootPkg.contains("youtube") || rootPkg.contains("sportzfy") || rootPkg.contains("webstream")) {
                         sCurrentPackage = rootPkg;
                         return true;
                     }
@@ -221,7 +84,7 @@ public class HomeKeyService extends AccessibilityService {
         // 2. Check sCurrentPackage cached from window state changes
         if (sCurrentPackage != null) {
             String current = sCurrentPackage.toLowerCase();
-            if (current.contains("youtube") || current.contains("sonyliv") || current.contains("webstream")) {
+            if (current.contains("youtube") || current.contains("sportzfy") || current.contains("webstream")) {
                 return true;
             }
         }
@@ -235,7 +98,7 @@ public class HomeKeyService extends AccessibilityService {
                     for (android.app.ActivityManager.RunningAppProcessInfo proc : procs) {
                         if (proc.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
                             String pName = proc.processName != null ? proc.processName.toLowerCase() : "";
-                            if (pName.contains("youtube") || pName.contains("sonyliv") || pName.contains("webstream")) {
+                            if (pName.contains("youtube") || pName.contains("sportzfy") || pName.contains("webstream")) {
                                 sCurrentPackage = pName;
                                 return true;
                             }
@@ -379,28 +242,64 @@ public class HomeKeyService extends AccessibilityService {
             if (pkgStr.contains("youtube")) {
                 scheduleProfileCheck();
             }
+
+            if (SportzfyAutoPilot.PKG_SPORTZFY.equals(pkgStr)) {
+                boolean windowChanged = (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+                SmartMatchDirector.getInstance(this).getSportzfyAutoPilot()
+                        .onAccessibilityActivityOrContent(this, windowChanged);
+            }
         }
     }
 
     private void scheduleProfileCheck() {
-        matchCheckHandler.removeCallbacks(this::checkAndSelectOlavoProfile);
-        matchCheckHandler.post(this::checkAndSelectOlavoProfile);
-        matchCheckHandler.postDelayed(this::checkAndSelectOlavoProfile, 400L);
-        matchCheckHandler.postDelayed(this::checkAndSelectOlavoProfile, 1000L);
-        matchCheckHandler.postDelayed(this::checkAndSelectOlavoProfile, 2000L);
-        matchCheckHandler.postDelayed(this::checkAndSelectOlavoProfile, 3500L);
-        matchCheckHandler.postDelayed(this::checkAndSelectOlavoProfile, 5000L);
+        profileHandler.removeCallbacks(profileCheckRunnable);
+        profileHandler.post(profileCheckRunnable);
+        profileHandler.postDelayed(profileCheckRunnable, 400L);
+        profileHandler.postDelayed(profileCheckRunnable, 1000L);
+        profileHandler.postDelayed(profileCheckRunnable, 2000L);
+        profileHandler.postDelayed(profileCheckRunnable, 3500L);
+        profileHandler.postDelayed(profileCheckRunnable, 5000L);
     }
 
     private static long sLastProfileClickMs = 0;
 
-    public void checkAndSelectOlavoProfile() {
+    private static final String[] PREFERRED_YT_PROFILE_QUERIES = new String[] {
+            "@spider-jace",
+            "Jace-13",
+            "spider-jace",
+            "Jace"
+    };
+    private static final String[] YT_PICKER_PROMPT_QUERIES = new String[] {
+            "Who's watching",
+            "Who is watching",
+            "Choose an account",
+            "Select an account",
+            "Switch account"
+    };
+    private static final String[] YT_PICKER_OPTION_QUERIES = new String[] {
+            "Add account",
+            "Add another account",
+            "Use YouTube signed out"
+    };
+    private static final String[] SKIP_PROFILE_CARD_QUERIES = new String[] {
+            "add account",
+            "add another account",
+            "guest",
+            "use youtube signed out",
+            "sign in",
+            "kids",
+            "youtube kids",
+            "olavo",
+            "olavoh18"
+    };
+
+    public void checkAndSelectPreferredYtProfile() {
         try {
             android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null) return;
 
             CharSequence activePkg = root.getPackageName();
-            if (activePkg != null && !activePkg.toString().toLowerCase().contains("youtube")) {
+            if (activePkg == null || !activePkg.toString().toLowerCase().contains("youtube")) {
                 return;
             }
 
@@ -410,89 +309,61 @@ public class HomeKeyService extends AccessibilityService {
                 return;
             }
 
-            // Match Olavo's name variants or his exact Gmail (olavoh18@gmail.com)
-            String[] targetQueries = new String[] {
-                    "olavoh18@gmail.com",
-                    "Olavo Olav",
-                    "Olavo",
-                    "olavo",
-                    "Olav",
-                    "olav",
-                    "olavoh18"
-            };
+            boolean isPickerScreen = containsAnyNodeText(root, YT_PICKER_PROMPT_QUERIES)
+                    || containsAnyNodeText(root, YT_PICKER_OPTION_QUERIES);
+            if (!isPickerScreen) {
+                // Avoid clicking profile badges or video titles when already on normal YouTube Home/player
+                return;
+            }
 
-            // 1. Direct text search
-            for (String query : targetQueries) {
-                java.util.List<android.view.accessibility.AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(query);
-                if (nodes != null && !nodes.isEmpty()) {
+            // 1. Direct text search for Jace's active profile (Jace-13 / @spider-jace)
+            for (String query : PREFERRED_YT_PROFILE_QUERIES) {
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> nodes =
+                        root.findAccessibilityNodeInfosByText(query);
+                if (nodes != null) {
                     for (android.view.accessibility.AccessibilityNodeInfo node : nodes) {
-                        if (clickNodeOrParent(node)) {
+                        if (!nodeMatchesSkipList(node) && activateNode(node)) {
                             sLastProfileClickMs = now;
-                            Log.i(TAG, "Successfully auto-selected Olavo profile matching '" + query + "' in YouTube!");
+                            Log.i(TAG, "Auto-selected active YouTube profile ('" + query + "')!");
                             return;
                         }
                     }
                 }
             }
 
-            // 2. Recursive content-description & text scan
-            if (searchAndClickProfile(root, targetQueries)) {
+            // 2. Recursive content-description & text scan for Jace-13 / @spider-jace
+            if (searchAndClickProfile(root, PREFERRED_YT_PROFILE_QUERIES)) {
                 sLastProfileClickMs = now;
                 return;
             }
 
-            // 3. Fallback: Check if the screen is displaying "Who's watching?" or accounts
-            String[] whoIsWatchingQueries = new String[] {
-                    "Who's watching",
-                    "Who is watching",
-                    "Choose an account",
-                    "Select an account",
-                    "Switch account",
-                    "Accounts",
-                    "Profiles",
-                    "Add account",
-                    "Guest"
-            };
-            boolean isProfileScreen = false;
-            for (String q : whoIsWatchingQueries) {
-                java.util.List<android.view.accessibility.AccessibilityNodeInfo> promptNodes = root.findAccessibilityNodeInfosByText(q);
-                if (promptNodes != null && !promptNodes.isEmpty()) {
-                    isProfileScreen = true;
-                    break;
-                }
+            // 3. Fallback when YouTube/Cobalt hides profile labels behind anonymous clickable cards:
+            // only select the focused/first card if it is not Guest, Kids, Add account, or stale Olavo.
+            Log.i(TAG, "YouTube profile picker detected without exposed Jace label; selecting safe active profile card.");
+            android.view.accessibility.AccessibilityNodeInfo focused =
+                    root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focused == null) {
+                focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
             }
-            if (!isProfileScreen) {
-                isProfileScreen = hasTextRecursive(root, whoIsWatchingQueries);
-            }
-
-            if (isProfileScreen) {
-                Log.i(TAG, "YouTube profile screen ('Who's watching?') detected. Selecting primary profile (Olavo Olav)...");
-
-                // Step A: Focus-based selection (the 1st profile is focused by default on Android TV)
-                android.view.accessibility.AccessibilityNodeInfo focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
-                if (focused == null) focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_ACCESSIBILITY);
-                if (focused != null) {
-                    clickNodeOrParent(focused);
-                    focused.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SELECT);
-                    android.graphics.Rect rect = new android.graphics.Rect();
-                    focused.getBoundsInScreen(rect);
-                    if (rect.width() > 0 && rect.height() > 0) {
-                        dispatchTap(rect.centerX(), rect.centerY());
+            if (focused != null && !nodeMatchesSkipList(focused)) {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                focused.getBoundsInScreen(rect);
+                if (rect.width() > 0 && rect.width() < 1800 && rect.height() > 0 && rect.height() < 1000) {
+                    if (activateNode(focused)) {
+                        pressEnterKey();
+                        sLastProfileClickMs = now;
+                        Log.i(TAG, "Activated focused safe YouTube profile card.");
+                        return;
                     }
                 }
+            }
 
-                // Step B: Hierarchy-based first card selection
-                clickFirstProfileCard(root);
-
-                // Step C: D-Pad Enter fallback (presses Enter on the pre-selected 1st profile card)
-                pressEnterKey();
-
+            if (clickFirstSafeProfileCard(root)) {
                 sLastProfileClickMs = now;
-                Log.i(TAG, "Selected primary profile (Olavo Olav) via focused card & D-Pad Enter.");
-                return;
+                Log.i(TAG, "Selected first non-skipped YouTube profile card.");
             }
         } catch (Exception e) {
-            Log.w(TAG, "Could not check Olavo profile: " + e.getMessage());
+            Log.w(TAG, "Could not check YouTube profile: " + e.getMessage());
         }
     }
 
@@ -522,18 +393,59 @@ public class HomeKeyService extends AccessibilityService {
         }
     }
 
-    private boolean searchAndClickProfile(android.view.accessibility.AccessibilityNodeInfo node, String[] queries) {
-        if (node == null) return false;
+    private boolean containsAnyNodeText(android.view.accessibility.AccessibilityNodeInfo root, String[] queries) {
+        if (root == null) return false;
+        for (String q : queries) {
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo> found =
+                    root.findAccessibilityNodeInfosByText(q);
+            if (found != null && !found.isEmpty()) {
+                return true;
+            }
+        }
+        return hasTextRecursive(root, queries);
+    }
+
+    private static String extractNodeText(android.view.accessibility.AccessibilityNodeInfo node) {
+        if (node == null) return "";
         CharSequence txt = node.getText();
         CharSequence desc = node.getContentDescription();
-        String nodeText = (txt != null ? txt.toString() : "") + " " + (desc != null ? desc.toString() : "");
-        nodeText = nodeText.toLowerCase();
+        return ((txt != null ? txt.toString() : "") + " " + (desc != null ? desc.toString() : ""))
+                .toLowerCase();
+    }
+
+    private boolean nodeMatchesSkipList(android.view.accessibility.AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        String own = extractNodeText(node);
+        for (String skip : SKIP_PROFILE_CARD_QUERIES) {
+            if (own.contains(skip)) return true;
+        }
+        return hasTextRecursive(node, SKIP_PROFILE_CARD_QUERIES);
+    }
+
+    private boolean activateNode(android.view.accessibility.AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        boolean acted = clickNodeOrParent(node);
+        if (node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SELECT)) {
+            acted = true;
+        }
+        android.graphics.Rect rect = new android.graphics.Rect();
+        node.getBoundsInScreen(rect);
+        if (rect.width() > 0 && rect.width() < 1800 && rect.height() > 0 && rect.height() < 1000) {
+            if (dispatchTap(rect.centerX(), rect.centerY())) {
+                acted = true;
+            }
+        }
+        return acted;
+    }
+
+    private boolean searchAndClickProfile(android.view.accessibility.AccessibilityNodeInfo node, String[] queries) {
+        if (node == null) return false;
+        String nodeText = extractNodeText(node);
 
         for (String q : queries) {
-            if (nodeText.contains(q.toLowerCase())) {
-                if (clickNodeOrParent(node)) {
-                    Log.i(TAG, "Successfully auto-selected Olavo profile matching '" + q + "' via deep scan!");
-                    pressEnterKey();
+            if (nodeText.contains(q.toLowerCase()) && !nodeMatchesSkipList(node)) {
+                if (activateNode(node)) {
+                    Log.i(TAG, "Successfully auto-selected YouTube profile matching '" + q + "' via deep scan!");
                     return true;
                 }
             }
@@ -547,10 +459,7 @@ public class HomeKeyService extends AccessibilityService {
 
     private boolean hasTextRecursive(android.view.accessibility.AccessibilityNodeInfo node, String[] queries) {
         if (node == null) return false;
-        CharSequence txt = node.getText();
-        CharSequence desc = node.getContentDescription();
-        String nodeText = (txt != null ? txt.toString() : "") + " " + (desc != null ? desc.toString() : "");
-        nodeText = nodeText.toLowerCase();
+        String nodeText = extractNodeText(node);
 
         for (String q : queries) {
             if (nodeText.contains(q.toLowerCase())) return true;
@@ -561,25 +470,19 @@ public class HomeKeyService extends AccessibilityService {
         return false;
     }
 
-    private boolean clickFirstProfileCard(android.view.accessibility.AccessibilityNodeInfo node) {
+    private boolean clickFirstSafeProfileCard(android.view.accessibility.AccessibilityNodeInfo node) {
         if (node == null) return false;
-        if (node.isFocused()) {
-            if (clickNodeOrParent(node)) return true;
-            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SELECT);
-            return true;
-        }
         if (node.isClickable() && (node.isFocusable() || "android.widget.Button".contentEquals(node.getClassName()))) {
-            android.graphics.Rect rect = new android.graphics.Rect();
-            node.getBoundsInScreen(rect);
-            if (rect.width() > 0 && rect.width() < 1800 && rect.height() > 0 && rect.height() < 1000) {
-                if (clickNodeOrParent(node)) return true;
-                node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SELECT);
-                dispatchTap(rect.centerX(), rect.centerY());
-                return true;
+            if (!nodeMatchesSkipList(node)) {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                node.getBoundsInScreen(rect);
+                if (rect.width() > 0 && rect.width() < 1800 && rect.height() > 0 && rect.height() < 1000) {
+                    if (activateNode(node)) return true;
+                }
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (clickFirstProfileCard(node.getChild(i))) return true;
+            if (clickFirstSafeProfileCard(node.getChild(i))) return true;
         }
         return false;
     }

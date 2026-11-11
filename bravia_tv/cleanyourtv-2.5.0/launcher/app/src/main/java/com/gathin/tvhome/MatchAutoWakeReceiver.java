@@ -31,42 +31,11 @@ public class MatchAutoWakeReceiver extends BroadcastReceiver {
         ensureAccessibilityEnabled(context);
 
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
-            Log.i(TAG, "Device booted. Scheduling match auto-wake events and checking active match window...");
+            Log.i(TAG, "Device booted. Launching custom launcher and starting SmartMatchDirector...");
             SportsCalendarSync.syncCalendarAsync(context, null);
             Config cfg = Config.load(context);
             if (cfg != null && cfg.raceCalendar != null) {
                 MatchAutoWakeScheduler.scheduleNextMatchEvents(context, cfg.raceCalendar);
-            }
-
-            // Check if boot happened during an active live match window
-            boolean matchInProgress = false;
-            if (cfg != null && cfg.raceCalendar != null) {
-                long nowMs = System.currentTimeMillis();
-                for (RaceWeekend.Race r : cfg.raceCalendar) {
-                    if (r.isPostponed || r.sessions == null) continue;
-                    for (RaceWeekend.Session s : r.sessions) {
-                        long kMs = s.start.toEpochMilli();
-                        if (nowMs >= (kMs - 5 * 60 * 1000L) && nowMs <= (kMs + 125 * 60 * 1000L)) {
-                            matchInProgress = true;
-                            break;
-                        }
-                    }
-                    if (matchInProgress) break;
-                }
-            }
-
-            if (matchInProgress) {
-                Log.i(TAG, "Cold boot occurred during active match window! Asserting HDMI 1 Active Source multi-burst...");
-                assertHdmiActiveSource(context);
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    Intent matchLaunch = new Intent(context, MainActivity.class);
-                    matchLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    matchLaunch.putExtra("extra_auto_switched_for_match", true);
-                    context.startActivity(matchLaunch);
-                }, 1500L);
-                return;
             }
 
             Intent bootLaunch = new Intent(context, MainActivity.class);
@@ -77,98 +46,9 @@ public class MatchAutoWakeReceiver extends BroadcastReceiver {
             return;
         }
 
-        // Post-match switch-off (2-5 minutes after match ends)
-        if (ACTION_MATCH_AUTO_OFF.equals(action) || (intent != null && intent.getBooleanExtra("extra_auto_off", false))) {
-            Log.i(TAG, "Match ended (+3 mins delay)! Putting HDMI 1 into inactive sleep state...");
-            long kickoffEpochMs = intent != null ? intent.getLongExtra("kickoff_epoch_ms", 0) : 0;
-            if (kickoffEpochMs > 0) {
-                MatchAutoWakeScheduler.markSleepCompleted(context, kickoffEpochMs);
-            }
-            Config cfg = Config.load(context);
-            if (cfg != null && cfg.raceCalendar != null) {
-                MatchAutoWakeScheduler.scheduleNextMatchEvents(context, cfg.raceCalendar);
-            }
-            deactivateHdmiAndSleep(context);
-            return;
-        }
-
-        // Pre-match auto-wake or late-wake switch assurance
-        boolean isLateSwitch = intent != null && intent.getBooleanExtra("extra_late_switch_check", false);
-        Log.i(TAG, (isLateSwitch ? "Late-wake switch assurance alarm fired!" : "Pre-match auto-wake alarm fired!") + " Waking screen and asserting HDMI 1 Active Source...");
-
-        long kickoffEpochMs = intent != null ? intent.getLongExtra("kickoff_epoch_ms", 0) : 0;
-        if (kickoffEpochMs > 0 && !isLateSwitch) {
-            MatchAutoWakeScheduler.markWakeCompleted(context, kickoffEpochMs);
-        }
-
-        Config cfg = Config.load(context);
-        if (cfg != null && cfg.raceCalendar != null) {
-            // Verify if this match was marked postponed
-            if (kickoffEpochMs > 0) {
-                for (RaceWeekend.Race r : cfg.raceCalendar) {
-                    if (r.sessions == null) continue;
-                    for (RaceWeekend.Session s : r.sessions) {
-                        if (s.start.toEpochMilli() == kickoffEpochMs && r.isPostponed) {
-                            Log.i(TAG, "Match " + r.name + " is POSTPONED! Aborting auto-wake and HDMI switch.");
-                            return;
-                        }
-                    }
-                }
-            }
-            MatchAutoWakeScheduler.scheduleNextMatchEvents(context, cfg.raceCalendar);
-        }
-
-        // Strict guard: verify a match is ACTUALLY active / in-window right now
-        boolean isMatchActive = false;
-        if (cfg != null && cfg.raceCalendar != null) {
-            long nowMs = System.currentTimeMillis();
-            for (RaceWeekend.Race r : cfg.raceCalendar) {
-                if (r.isPostponed || r.sessions == null) continue;
-                for (RaceWeekend.Session s : r.sessions) {
-                    long kMs = s.start.toEpochMilli();
-                    if (nowMs >= (kMs - 6 * 60 * 1000L) && nowMs <= (kMs + 130 * 60 * 1000L)) {
-                        isMatchActive = true;
-                        break;
-                    }
-                }
-                if (isMatchActive) break;
-            }
-        }
-
-        if (!isMatchActive) {
-            Log.i(TAG, "No match active or scheduled right now. Aborting HDMI Active Source switch.");
-            return;
-        }
-
-        // If the match is already actively streaming in the foreground, switch TV silently without interrupting playback!
-        if (HomeKeyService.isStreamingAppInForeground(context)) {
-            Log.i(TAG, "Streaming app is already in foreground! Asserting silent active source to switch TV without interrupting playback.");
-            assertHdmiActiveSourceSilent(context);
-            return;
-        }
-
-        // Acquire full wake lock to turn screen on
-        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        if (pm != null) {
-            PowerManager.WakeLock wl = pm.newWakeLock(
-                    PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.ON_AFTER_RELEASE,
-                    "bravia:MatchAutoWakeLock"
-            );
-            wl.acquire(60_000); // 60 seconds
-        }
-
-        // Multi-Burst HDMI Active Source switch (switches Sony Bravia from Tata Sky to Fire Stick)
-        assertHdmiActiveSource(context);
-
-        // Stream launch after 1.5s delay to allow Sony Bravia HDMI handshake to settle
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-            Intent launchIntent = new Intent(context, MainActivity.class);
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                    | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            launchIntent.putExtra("extra_auto_switched_for_match", true);
-            context.startActivity(launchIntent);
-        }, 1500L);
+        // Delegate any legacy alarm cleanly to SmartMatchDirector (no forceful HDMI hijack or forced sleep)
+        Log.i(TAG, "Delegating alarm (" + action + ") to SmartMatchDirector queue evaluation");
+        SmartMatchDirector.getInstance(context).evaluateAndDirect();
     }
 
     public static void ensureAccessibilityEnabled(Context context) {

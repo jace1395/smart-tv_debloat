@@ -86,12 +86,20 @@ public class WebStreamActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 progressBar.setVisibility(View.GONE);
-                // Attempt to request high quality (1080p/720p) on web players
+                // Attempt to unmute/play/fullscreen and request high quality on web players
                 view.evaluateJavascript(
                     "(function() {" +
                     "  try {" +
                     "    if (window.yt && window.yt.player) { yt.player.setPlaybackQuality('hd1080'); }" +
-                    "    var v = document.querySelector('video'); if (v) { v.setAttribute('playsinline', ''); }" +
+                    "    var v = document.querySelector('video');" +
+                    "    if (v) {" +
+                    "      v.setAttribute('playsinline', '');" +
+                    "      v.muted = false;" +
+                    "      if (v.paused) { v.play().catch(function(){}); }" +
+                    "      var fsBtn = document.querySelector('.ytp-fullscreen-button, button[title*=\"Fullscreen\"], button[aria-label*=\"full\"]');" +
+                    "      if (fsBtn) { fsBtn.click(); }" +
+                    "      else if (v.requestFullscreen && !document.fullscreenElement) { v.requestFullscreen().catch(function(){}); }" +
+                    "    }" +
                     "  } catch(e) {}" +
                     "})()", null);
             }

@@ -3,6 +3,7 @@ package com.gathin.tvhome;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
@@ -145,12 +146,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private TextView stats;
     private List<RaceWeekend.Race> raceCalendar;
     private View racePanel;
-    private TextView raceKicker, raceHeadline, raceSessions;
+    private boolean racePanelSuppressedByScroll;
+    private TextView raceKicker, raceHeadline, raceTopDrivers, raceSessions;
     private TextView tabFootball, tabSonyLiv, btnSportWatch;
     private static final int SPORT_FOOTBALL = 0;
     private static final int SPORT_SONYLIV = 1;
     private int selectedSport = SPORT_FOOTBALL;
     private int currentSonyLivIndex = 0;
+    private String cachedPast4Summary = "";
+    private List<String> cachedPast4List = new ArrayList<>();
+    private final List<FootballScheduleService.FootballMatch> cachedSportzfyMatches = new ArrayList<>();
     /** config.xml show_stats, overridable by a theme. Off: the line is gone and nothing is read. */
     private boolean showStats;
     private boolean shamsi;
@@ -367,15 +372,25 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         racePanel = findViewById(R.id.racePanel);
         raceKicker = findViewById(R.id.raceKicker);
         raceHeadline = findViewById(R.id.raceHeadline);
+        raceTopDrivers = findViewById(R.id.raceTopDrivers);
         raceSessions = findViewById(R.id.raceSessions);
+        if (raceTopDrivers != null) {
+            raceTopDrivers.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) showRacePanel();
+            });
+            raceTopDrivers.setOnClickListener(v -> showPast4MatchesDialog());
+        }
         tabFootball = findViewById(R.id.tabFootball);
         tabSonyLiv = findViewById(R.id.tabSonyLiv);
         btnSportWatch = findViewById(R.id.btnSportWatch);
         if (tabFootball != null) {
             tabFootball.setOnFocusChangeListener((v, hasFocus) -> {
-                if (hasFocus && selectedSport != SPORT_FOOTBALL) {
-                    selectedSport = SPORT_FOOTBALL;
-                    updateRace();
+                if (hasFocus) {
+                    showRacePanel();
+                    if (selectedSport != SPORT_FOOTBALL) {
+                        selectedSport = SPORT_FOOTBALL;
+                        updateRace();
+                    }
                 }
             });
             tabFootball.setOnClickListener(v -> {
@@ -385,17 +400,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         if (tabSonyLiv != null) {
             tabSonyLiv.setOnFocusChangeListener((v, hasFocus) -> {
-                if (hasFocus && selectedSport != SPORT_SONYLIV) {
-                    selectedSport = SPORT_SONYLIV;
-                    updateRace();
+                if (hasFocus) {
+                    showRacePanel();
+                    if (selectedSport != SPORT_SONYLIV) {
+                        selectedSport = SPORT_SONYLIV;
+                        updateRace();
+                    }
                 }
             });
             tabSonyLiv.setOnClickListener(v -> {
-                if (selectedSport == SPORT_SONYLIV) {
-                    List<SonyLivSchedule.LivMatch> matches = SonyLivSchedule.getTodayMatches();
-                    if (!matches.isEmpty()) {
-                        currentSonyLivIndex = (currentSonyLivIndex + 1) % matches.size();
-                    }
+                if (selectedSport == SPORT_SONYLIV && !cachedSportzfyMatches.isEmpty()) {
+                    currentSonyLivIndex = (currentSonyLivIndex + 1) % cachedSportzfyMatches.size();
                 }
                 selectedSport = SPORT_SONYLIV;
                 updateRace();
@@ -410,9 +425,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
         });
         if (btnSportWatch != null) {
+            btnSportWatch.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) showRacePanel();
+            });
             btnSportWatch.setOnClickListener(v -> openSportStream());
         }
         if (raceHeadline != null) {
+            raceHeadline.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) showRacePanel();
+            });
             raceHeadline.setOnClickListener(v -> openSportStream());
         }
         showStats = cfg.showStats;
@@ -664,6 +685,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         grid.scrollToPosition(0);
         lastFocused = 0;
         lastFocusedKey = adapter.getItemCount() > 0 ? adapter.keyAt(0) : null;
+        showRacePanel();
         rebuildOnResume = true;
     }
 
@@ -696,12 +718,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (intent.getBooleanExtra("extra_auto_switched_for_match", false)) {
             selectedSport = SPORT_FOOTBALL;
             updateRace();
-            checkAndPollLiveStream();
+            SmartMatchDirector.getInstance(this).evaluateAndDirect();
         }
     }
 
     private void checkMatchAutoStreamWindow() {
-        checkAndPollLiveStream();
+        SmartMatchDirector.getInstance(this).onLauncherResumed();
     }
 
     private void checkAndPollLiveStream() {
@@ -844,7 +866,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (showStats) startStats();
         sky.update();
         wallpaperPlayer.start();
-        checkMatchAutoStreamWindow();
+        SmartMatchDirector.getInstance(this).onLauncherResumed();
         handler.postDelayed(minuteTick, MINUTE_MS);
         if (festive && diya != null) {
             diya.start();
@@ -941,6 +963,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onPause() {
         super.onPause();
+        SmartMatchDirector.getInstance(this).onLauncherPaused();
         stopStreamPolling();
         endReorder();   // Home or another app while reordering keeps the order so far
         wallpaperPlayer.stop();
@@ -948,6 +971,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         hero.animate().cancel();
         ambient.animate().cancel();
         heroArt.animate().cancel();
+        if (racePanel != null) racePanel.animate().cancel();
         handler.removeCallbacks(minuteTick);
         stopStats();
         if (diya != null) diya.stop();
@@ -1415,6 +1439,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     // ---- top shelf -------------------------------------------------------------------------------
 
     private void showHero(int position, float dockTopInRoot) {
+        showRacePanel();
         if (hero.getVisibility() == View.GONE) {
             hero.setAlpha(0f);
             if (ambient.getVisibility() == View.GONE) return;
@@ -1672,6 +1697,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      * name above the dock does not show (every grid tile has its name underneath).
      */
     private void showGlowOnly(int position) {
+        hideRacePanel();
         if (ambient.getVisibility() == View.GONE) return;
         int color = adapter.ambientColorAt(position);
         stopAmbientAnimation();
@@ -1965,6 +1991,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         libraryFocusPending = false;
         hideGlass();
         hideHero();
+        hideRacePanel();
     }
 
     @Override public void onLibraryUp() {
@@ -2158,7 +2185,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 btnSportWatch.setText("▶ STREAM ISL");
                 btnSportWatch.setNextFocusUpId(R.id.tabFootball);
             } else {
-                btnSportWatch.setText("▶ OPEN SONY LIV");
+                btnSportWatch.setText("▶ OPEN SPORTZFY");
                 btnSportWatch.setNextFocusUpId(R.id.tabSonyLiv);
             }
         }
@@ -2234,29 +2261,149 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     openSportStreamWithUrl(streamUrl);
                 });
             } else {
-                String sonyLivPkg = null;
-                if (isPackageInstalled("com.onemainstream.sonyliv.android")) {
-                    sonyLivPkg = "com.onemainstream.sonyliv.android";
-                } else if (isPackageInstalled("com.sonyliv")) {
-                    sonyLivPkg = "com.sonyliv";
-                }
-                if (sonyLivPkg != null) {
-                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage(sonyLivPkg);
+                if (isPackageInstalled(SportzfyAutoPilot.PKG_SPORTZFY)) {
+                    Intent launchIntent = getPackageManager().getLaunchIntentForPackage(SportzfyAutoPilot.PKG_SPORTZFY);
                     if (launchIntent != null) {
+                        SmartMatchDirector.getInstance(this).getSportzfyAutoPilot().startBrowseFootball();
                         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-                        Toast.makeText(this, "Opening Sony LIV...", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Opening Sportzfy Football (Live & Upcoming)...", Toast.LENGTH_SHORT).show();
                         startActivity(launchIntent);
                         return;
                     }
                 }
-                Intent webIntent = new Intent(this, WebStreamActivity.class);
-                webIntent.putExtra(WebStreamActivity.EXTRA_URL, "https://www.sonyliv.com/sports/football");
-                webIntent.putExtra(WebStreamActivity.EXTRA_TITLE, "Sony LIV Football");
-                startActivity(webIntent);
+                Toast.makeText(this, "Sportzfy is not installed on this device.", Toast.LENGTH_SHORT).show();
             }
         } catch (Exception e) {
             Toast.makeText(this, "Could not open stream: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void showPast4MatchesDialog() {
+        List<String> list = cachedPast4List;
+        if (list == null || list.isEmpty()) {
+            IslLiveScoreService.LiveMatchInfo info = IslLiveScoreService.getLiveMatchInfo();
+            if (info != null && info.past4Matches != null) {
+                list = info.past4Matches;
+            }
+        }
+        if (list == null || list.isEmpty()) {
+            Toast.makeText(this, "No completed ISL scores loaded yet.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) sb.append('\n');
+            sb.append(i + 1).append(".  ").append(list.get(i));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("ISL — Past 4 Games")
+                .setMessage(sb.toString())
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private void applyCachedPast4Summary() {
+        if (raceTopDrivers == null) return;
+        if (selectedSport == SPORT_FOOTBALL && cachedPast4Summary != null && !cachedPast4Summary.isEmpty()) {
+            raceTopDrivers.setText(cachedPast4Summary);
+            raceTopDrivers.setVisibility(View.VISIBLE);
+        } else {
+            raceTopDrivers.setVisibility(View.GONE);
+        }
+    }
+
+    private void showRacePanel() {
+        racePanelSuppressedByScroll = false;
+        if (racePanel == null) return;
+        racePanel.animate().cancel();
+        if (racePanel.getVisibility() != View.VISIBLE) {
+            racePanel.setVisibility(View.VISIBLE);
+        }
+        if (racePanel.getAlpha() < 1f) {
+            if (animations && !reducedMotion) {
+                racePanel.animate().alpha(1f).setDuration(160).start();
+            } else {
+                racePanel.setAlpha(1f);
+            }
+        }
+    }
+
+    private void hideRacePanel() {
+        racePanelSuppressedByScroll = true;
+        if (racePanel == null) return;
+        racePanel.animate().cancel();
+        if (animations && !reducedMotion) {
+            if (racePanel.getVisibility() == View.VISIBLE && racePanel.getAlpha() > 0f) {
+                racePanel.animate().alpha(0f).setDuration(100).withEndAction(() -> {
+                    if (racePanelSuppressedByScroll && racePanel != null) {
+                        racePanel.setVisibility(View.INVISIBLE);
+                    }
+                }).start();
+            } else {
+                racePanel.setAlpha(0f);
+                racePanel.setVisibility(View.INVISIBLE);
+            }
+        } else {
+            racePanel.setAlpha(0f);
+            racePanel.setVisibility(View.INVISIBLE);
+        }
+    }
+
+    private void syncRacePanelVisibility() {
+        if (racePanel == null) return;
+        if (racePanelSuppressedByScroll) {
+            racePanel.animate().cancel();
+            racePanel.setAlpha(0f);
+            racePanel.setVisibility(View.INVISIBLE);
+        } else {
+            racePanel.animate().cancel();
+            racePanel.setAlpha(1f);
+            racePanel.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void renderSportzfyCard() {
+        if (raceTopDrivers != null) {
+            raceTopDrivers.setVisibility(View.GONE);
+        }
+        if (!cachedSportzfyMatches.isEmpty()) {
+            if (currentSonyLivIndex >= cachedSportzfyMatches.size()) currentSonyLivIndex = 0;
+            FootballScheduleService.FootballMatch m = cachedSportzfyMatches.get(currentSonyLivIndex);
+            String tierLabel = m.priorityTier == FootballScheduleService.TIER_ISL ? "ISL"
+                    : (m.priorityTier == FootballScheduleService.TIER_INDIA ? "INDIA" : "FOOTBALL");
+            String leagueUpper = m.competitionHint != null && !m.competitionHint.isEmpty()
+                    ? m.competitionHint.toUpperCase(Locale.ROOT) : "FOOTBALL";
+            raceKicker.setText("SPORTZFY \u00B7 " + tierLabel + " \u00B7 " + leagueUpper);
+
+            String counterStr = cachedSportzfyMatches.size() > 1
+                    ? "   (" + (currentSonyLivIndex + 1) + "/" + cachedSportzfyMatches.size() + " live & upcoming)"
+                    : "";
+
+            if (m.isExplicitlyLive()) {
+                SpannableString live = new SpannableString("\u25CF  LIVE \u00B7 " + m.title);
+                live.setSpan(new ForegroundColorSpan(RACE_RED), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                raceHeadline.setText(live);
+                raceSessions.setText("LIVE IN PROGRESS \u00B7 SPORTZFY LIVE" + counterStr);
+                btnSportWatch.setText("\u25B6 WATCH LIVE ON SPORTZFY");
+            } else {
+                raceHeadline.setText(m.title);
+                if (m.startTimeMs > 0) {
+                    java.time.Duration diff = java.time.Duration.between(
+                            java.time.Instant.now(), java.time.Instant.ofEpochMilli(m.startTimeMs));
+                    String whenText = diff.isNegative() ? "STARTING NOW" : ("KICKOFF IN " + RaceWeekend.countdown(diff));
+                    raceSessions.setText(whenText + " \u00B7 SPORTZFY FOOTBALL" + counterStr);
+                } else {
+                    raceSessions.setText("UPCOMING \u00B7 SPORTZFY FOOTBALL" + counterStr);
+                }
+                btnSportWatch.setText("\u25B6 OPEN SPORTZFY");
+            }
+        } else {
+            raceKicker.setText("FOOTBALL \u00B7 SPORTZFY LIVE & UPCOMING");
+            raceHeadline.setText("Live & Upcoming Football");
+            raceSessions.setText("OPENS DIRECTLY TO SPORTZFY FOOTBALL SECTION");
+            btnSportWatch.setText("\u25B6 OPEN SPORTZFY");
+        }
+        syncRacePanelVisibility();
     }
 
     /**
@@ -2265,16 +2412,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      */
     private void updateRace() {
         updateSportTabs();
-        if (racePanel != null) {
-            racePanel.setVisibility(View.VISIBLE);
-        }
+        syncRacePanelVisibility();
         if (selectedSport == SPORT_FOOTBALL) {
             // Render the scheduled/upcoming match IMMEDIATELY so tabs and text appear with zero delay
             renderScheduleCard();
-            // Then asynchronously check for live scores so it updates to LIVE if match is in progress
+            applyCachedPast4Summary();
+            // Then asynchronously check for live scores + past 4 completed ISL games
             IslLiveScoreService.fetchLiveScore(liveInfo -> {
                 if (isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())) return;
+                if (liveInfo != null) {
+                    cachedPast4Summary = liveInfo.previousMatchSummary != null ? liveInfo.previousMatchSummary : "";
+                    cachedPast4List = liveInfo.past4Matches != null ? new ArrayList<>(liveInfo.past4Matches) : new ArrayList<>();
+                }
                 if (selectedSport != SPORT_FOOTBALL) return;
+                applyCachedPast4Summary();
                 if (liveInfo != null && liveInfo.isLive) {
                     SpannableString liveKicker = new SpannableString("\u25CF  LIVE \u00B7 " + liveInfo.clockDetail + " \u00B7 ISL \u00B7 " + liveInfo.matchName.toUpperCase(Locale.ROOT));
                     liveKicker.setSpan(new ForegroundColorSpan(RACE_RED), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -2287,52 +2438,33 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     raceSessions.setText(sessionText);
 
                     btnSportWatch.setText("\u25B6 STREAM ISL (LIVE)");
-                    racePanel.setVisibility(View.VISIBLE);
+                    syncRacePanelVisibility();
                 }
             });
             return;
         } else if (selectedSport == SPORT_SONYLIV) {
-            List<SonyLivSchedule.LivMatch> livMatches = SonyLivSchedule.getTodayMatches();
-            if (!livMatches.isEmpty()) {
-                if (currentSonyLivIndex >= livMatches.size()) currentSonyLivIndex = 0;
-                SonyLivSchedule.LivMatch m = livMatches.get(currentSonyLivIndex);
-                raceKicker.setText(m.tournament + " \u00B7 " + m.match.toUpperCase(Locale.ROOT));
-
-                java.time.Instant now = java.time.Instant.now();
-                java.time.Duration diff = java.time.Duration.between(now, m.kickoffInstant);
-                if (diff.isNegative()) {
-                    long minutesPast = Math.abs(diff.toMinutes());
-                    if (minutesPast < 120) {
-                        SpannableString live = new SpannableString("\u25CF  LIVE \u00B7 " + minutesPast + "' \u00B7 SONY LIV");
-                        live.setSpan(new ForegroundColorSpan(RACE_RED), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                        raceHeadline.setText(live);
-                        btnSportWatch.setText("\u25B6 WATCH LIVE ON SONY LIV");
-                    } else {
-                        raceHeadline.setText("Full Time / Replays Available");
-                        btnSportWatch.setText("\u25B6 OPEN SONY LIV");
+            renderSportzfyCard();
+            FootballScheduleService.fetchPriorityQueueAsync(queue -> {
+                if (isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())) return;
+                cachedSportzfyMatches.clear();
+                if (queue != null) {
+                    for (FootballScheduleService.FootballMatch m : queue) {
+                        if (!m.isFinished()) {
+                            cachedSportzfyMatches.add(m);
+                        }
                     }
-                } else {
-                    raceHeadline.setText("Kickoff in " + RaceWeekend.countdown(diff));
-                    btnSportWatch.setText("\u25B6 WATCH ON SONY LIV");
                 }
-                String counterStr = livMatches.size() > 1 ? "   (" + (currentSonyLivIndex + 1) + "/" + livMatches.size() + " matches today)" : "";
-                raceSessions.setText("KICKOFF: " + m.timeIst + " \u00B7 SONY LIV LIVE" + counterStr);
-            } else {
-                raceKicker.setText("FOOTBALL \u00B7 SONY LIV");
-                raceHeadline.setText("UEFA Champions League & Bundesliga");
-                raceSessions.setText("LIVE MATCHES, HIGHLIGHTS & REPLAYS");
-                btnSportWatch.setText("\u25B6 OPEN SONY LIV");
-            }
-            racePanel.setVisibility(View.VISIBLE);
+                if (selectedSport == SPORT_SONYLIV) {
+                    renderSportzfyCard();
+                }
+            });
             return;
         }
         renderScheduleCard();
     }
 
     private void renderScheduleCard() {
-        if (racePanel != null) {
-            racePanel.setVisibility(View.VISIBLE);
-        }
+        syncRacePanelVisibility();
         if (raceCalendar == null || raceCalendar.isEmpty()) {
             java.time.Instant now = java.time.Instant.now();
             java.time.Instant matchTime = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"))
@@ -2433,7 +2565,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             row.setSpan(new android.text.style.ForegroundColorSpan(color), start, row.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         raceSessions.setText(row);
-        racePanel.setVisibility(View.VISIBLE);
+        syncRacePanelVisibility();
     }
 
     /** Shows the Wi-Fi network name on the button when we can read it, otherwise the connection type. */
@@ -2640,6 +2772,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      *  which the Live TV app handles; where nothing takes that, the configured `input_action` is sent
      *  with the same URI instead (XGIMI's HDMI player only answers com.xgimi.action.hdmiPlayer). */
     private void openInput(String inputId) {
+        SmartMatchDirector.getInstance(this).recordLastHdmiInput(inputId);
         Uri uri = TvContract.buildChannelUriForPassthroughInput(inputId);
         Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "vnd.android.cursor.item/channel")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

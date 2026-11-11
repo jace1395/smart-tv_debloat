@@ -34,61 +34,33 @@ public class MatchAutoWakeScheduler {
     }
 
     public static void scheduleNextMatchEvents(Context context, List<RaceWeekend.Race> calendar) {
-        if (calendar == null || calendar.isEmpty()) return;
-
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        long lastWokenKickoff = prefs.getLong(KEY_LAST_WAKE_KICKOFF, 0);
-        long lastSleptKickoff = prefs.getLong(KEY_LAST_SLEEP_KICKOFF, 0);
-
-        long nowMs = System.currentTimeMillis();
+        // Legacy forceful pre-match alarms disabled: SmartMatchDirector evaluates the priority
+        // Football queue continuously and only switches HDMI when TV is on external input and not dismissed.
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-        if (am == null) return;
-
-        int scheduledCount = 0;
+        if (am == null || calendar == null) return;
+        long nowMs = System.currentTimeMillis();
         for (RaceWeekend.Race r : calendar) {
-            if (r.isPostponed || r.sessions == null) continue;
+            if (r.sessions == null) continue;
             for (RaceWeekend.Session s : r.sessions) {
                 long kickoffMs = s.start.toEpochMilli();
-                long cycleEndMs = kickoffMs + MATCH_DURATION_MS + POST_MATCH_DELAY_MS;
-                // Schedule all upcoming matches within the next 36 hours whose full cycle has not ended
-                if (cycleEndMs > nowMs && kickoffMs < (nowMs + 36 * 3600 * 1000L)) {
+                if (kickoffMs + MATCH_DURATION_MS + POST_MATCH_DELAY_MS > nowMs) {
                     int baseCode = (int) ((kickoffMs / 60000L) % 100000L);
                     int wakeCode = baseCode * 10 + 1;
-
-                    // 1. Schedule Pre-Match Hardware Wake Alarm (5 minutes before kickoff)
-                    long wakeEpochMs = kickoffMs - LEAD_TIME_MS;
-                    if (wakeEpochMs > nowMs) {
-                        Intent wakeIntent = new Intent(context, MatchAutoWakeReceiver.class);
-                        wakeIntent.setAction(MatchAutoWakeReceiver.ACTION_MATCH_AUTO_WAKE);
-                        wakeIntent.putExtra("kickoff_epoch_ms", kickoffMs);
-                        PendingIntent wakePi = PendingIntent.getBroadcast(
-                                context,
-                                wakeCode,
-                                wakeIntent,
-                                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-                        );
-                        scheduleExact(am, wakeEpochMs, wakePi);
-                        Log.i(TAG, "Scheduled pre-match hardware wake at: " + wakeEpochMs + " (kickoff: " + kickoffMs + ", code: " + wakeCode + ")");
-                    } else if (nowMs < (kickoffMs + MATCH_DURATION_MS) && lastWokenKickoff != kickoffMs) {
-                        // Current match window active: fire immediate wake
-                        Intent wakeIntent = new Intent(context, MatchAutoWakeReceiver.class);
-                        wakeIntent.setAction(MatchAutoWakeReceiver.ACTION_MATCH_AUTO_WAKE);
-                        wakeIntent.putExtra("kickoff_epoch_ms", kickoffMs);
-                        PendingIntent wakePi = PendingIntent.getBroadcast(
-                                context,
-                                wakeCode,
-                                wakeIntent,
-                                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
-                        );
-                        scheduleExact(am, nowMs + 1000, wakePi);
-                        Log.i(TAG, "Scheduled immediate in-window wake for kickoff: " + kickoffMs);
+                    Intent wakeIntent = new Intent(context, MatchAutoWakeReceiver.class);
+                    wakeIntent.setAction(MatchAutoWakeReceiver.ACTION_MATCH_AUTO_WAKE);
+                    PendingIntent wakePi = PendingIntent.getBroadcast(
+                            context,
+                            wakeCode,
+                            wakeIntent,
+                            PendingIntent.FLAG_NO_CREATE | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
+                    );
+                    if (wakePi != null) {
+                        am.cancel(wakePi);
+                        wakePi.cancel();
                     }
-
-                    scheduledCount++;
                 }
             }
         }
-        Log.i(TAG, "Processed match auto-wake events for " + scheduledCount + " upcoming match session(s).");
     }
 
     private static void scheduleExact(AlarmManager am, long triggerAtMillis, PendingIntent pi) {

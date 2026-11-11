@@ -696,7 +696,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onResume() {
         super.onResume();
-        SmartMatchDirector.getInstance(this).onLauncherResumed();
         // A festival that started or ended while Home was in the background: rebuild with or without it.
         if (festive != festival.active(LocalDate.now())) {
             recreate();
@@ -815,7 +814,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onPause() {
         super.onPause();
-        SmartMatchDirector.getInstance(this).onLauncherPaused();
         endReorder();   // Home or another app while reordering keeps the order so far
         wallpaperPlayer.stop();
         stopAmbientAnimation();
@@ -2206,20 +2204,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     if (liveInfo.previousMatchSummary != null && !liveInfo.previousMatchSummary.isEmpty() && raceTopDrivers != null) {
                         raceTopDrivers.setText(liveInfo.previousMatchSummary);
                         raceTopDrivers.setVisibility(View.VISIBLE);
-                        if (liveInfo.past4Matches != null && !liveInfo.past4Matches.isEmpty()) {
-                            raceTopDrivers.setFocusable(true);
-                            raceTopDrivers.setOnClickListener(v -> {
-                                StringBuilder sb = new StringBuilder();
-                                for (int i = 0; i < liveInfo.past4Matches.size(); i++) {
-                                    sb.append(i + 1).append(". ").append(liveInfo.past4Matches.get(i)).append("\n\n");
-                                }
-                                new AlertDialog.Builder(MainActivity.this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                                        .setTitle("Recent ISL Matches (Past 4 Scores)")
-                                        .setMessage(sb.toString().trim())
-                                        .setPositiveButton("Close", null)
-                                        .show();
-                            });
-                        }
                     }
                     if (liveInfo.isLive) {
                         SpannableString liveKicker = new SpannableString("\u25CF  LIVE \u00B7 " + liveInfo.clockDetail + " \u00B7 ISL \u00B7 " + liveInfo.matchName.toUpperCase(Locale.ROOT));
@@ -2598,7 +2582,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      *  which the Live TV app handles; where nothing takes that, the configured `input_action` is sent
      *  with the same URI instead (XGIMI's HDMI player only answers com.xgimi.action.hdmiPlayer). */
     private void openInput(String inputId) {
-        SmartMatchDirector.getInstance(this).recordLastHdmiInput(inputId);
         Uri uri = TvContract.buildChannelUriForPassthroughInput(inputId);
         Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "vnd.android.cursor.item/channel")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

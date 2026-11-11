@@ -116,7 +116,7 @@
                 android:paddingBottom="3dp"
                 android:background="@drawable/sports_tab_bg"
                 android:singleLine="true"
-                android:text="SONY LIV"
+                android:text="SPORTZFY"
                 android:textColor="#70FFFFFF"
                 android:textSize="12sp"
                 android:fontFamily="@font/outfit_medium"
@@ -164,6 +164,24 @@
             android:shadowDy="3"
             android:shadowRadius="10"
             android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/raceTopDrivers"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:lineSpacingExtra="2dp"
+            android:textColor="#D9FFFFFF"
+            android:textSize="12sp"
+            android:fontFamily="@font/outfit_medium"
+            android:letterSpacing="0.04"
+            android:shadowColor="#D9000000"
+            android:shadowDx="0"
+            android:shadowDy="2"
+            android:shadowRadius="6"
+            android:visibility="gone" />
 
         <LinearLayout
             android:layout_width="wrap_content"

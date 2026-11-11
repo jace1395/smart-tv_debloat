@@ -11,8 +11,7 @@
     <string-array name="dock_apps">
         <item>com.amazon.firetv.youtube</item>
         <item>com.google.android.youtube.tv</item>
-        <item>com.onemainstream.sonyliv.android</item>
-        <item>com.sonyliv</item>
+        <item>com.blaze.sportzfy</item>
         <item>in.startv.hotstar</item>
         <item>com.zee5.amazon</item>
         <item>com.netflix.ninja</item>

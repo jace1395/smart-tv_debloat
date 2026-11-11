@@ -94,12 +94,7 @@ public class WebStreamActivity extends Activity {
                     "      var v = document.querySelector('video');" +
                     "      if (v) {" +
                     "        v.controls = true;" +
-                    "        v.muted = false;" +
                     "        v.setAttribute('playsinline', '');" +
-                    "        if (v.paused) v.play();" +
-                    "        if (!document.fullscreenElement && !document.webkitFullscreenElement) {" +
-                    "          (v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen || function(){}).call(v);" +
-                    "        }" +
                     "      }" +
                     "    }" +
                     "    enhance();" +

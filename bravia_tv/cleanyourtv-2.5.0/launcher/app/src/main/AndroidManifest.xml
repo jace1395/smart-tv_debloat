@@ -40,8 +40,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="com.gathin.tvhome.category.DOCK_CARD" />
         </intent>
-        <package android:name="com.onemainstream.sonyliv.android" />
-        <package android:name="com.sonyliv" />
+        <package android:name="com.blaze.sportzfy" />
+        <package android:name="com.fancode.tv" />
         <package android:name="com.amazon.firetv.youtube" />
         <package android:name="com.google.android.youtube.tv" />
         <!-- China-market MIUI TV firmware: the Settings and Wi-Fi pills fall back to Xiaomi's settings app. -->

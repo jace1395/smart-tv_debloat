@@ -35,6 +35,8 @@ public class IslLiveScoreService {
         public String clockDetail = ""; // e.g. "59'", "HT", "FT"
         public String statusState = "";  // "in", "post", "pre"
         public String venue = "";
+        public String previousMatchSummary = ""; // e.g. "PREV: Inter Kashi 0 - 3 SC Delhi (FT)"
+        public java.util.List<String> past4Matches = new java.util.ArrayList<>();
     }
 
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -44,13 +46,17 @@ public class IslLiveScoreService {
     private static volatile long lastFetchTime = 0;
     private static final long CACHE_DURATION_MS = 25 * 1000; // 25 seconds for live matches
 
+    public static LiveMatchInfo getLiveMatchInfo() {
+        return cachedMatchInfo;
+    }
+
     public interface Callback {
         void onResult(LiveMatchInfo matchInfo);
     }
 
     public static void fetchLiveScore(Callback callback) {
         if (cachedMatchInfo != null && (System.currentTimeMillis() - lastFetchTime < CACHE_DURATION_MS)) {
-            callback.onResult(cachedMatchInfo);
+            if (callback != null) callback.onResult(cachedMatchInfo);
             return;
         }
 
@@ -61,22 +67,30 @@ public class IslLiveScoreService {
                 lastFetchTime = System.currentTimeMillis();
             }
             final LiveMatchInfo res = cachedMatchInfo;
-            mainHandler.post(() -> callback.onResult(res));
+            if (callback != null) {
+                mainHandler.post(() -> callback.onResult(res));
+            }
         });
     }
 
     private static LiveMatchInfo queryScoreboard() {
-        LiveMatchInfo todayInfo = queryScoreboardUrl(ESPN_ISL_SCOREBOARD_URL);
-        if (todayInfo != null && todayInfo.isLive) {
+        LiveMatchInfo todayInfo = queryScoreboardUrl(ESPN_ISL_SCOREBOARD_URL, true);
+        if (todayInfo != null && (todayInfo.isLive || "pre".equalsIgnoreCase(todayInfo.statusState))) {
             return todayInfo;
         }
 
         try {
-            // Check tomorrow's match if not currently live
+            // Check tomorrow's match only if no live/upcoming match was already found in default scoreboard
             java.time.LocalDate tomorrow = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(1);
             String tomorrowParam = tomorrow.format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE);
-            LiveMatchInfo tomorrowInfo = queryScoreboardUrl(ESPN_ISL_SCOREBOARD_URL + "?dates=" + tomorrowParam);
+            LiveMatchInfo tomorrowInfo = queryScoreboardUrl(
+                    ESPN_ISL_SCOREBOARD_URL + "?dates=" + tomorrowParam,
+                    todayInfo == null || todayInfo.past4Matches.isEmpty());
             if (tomorrowInfo != null) {
+                if (tomorrowInfo.past4Matches.isEmpty() && todayInfo != null && !todayInfo.past4Matches.isEmpty()) {
+                    tomorrowInfo.past4Matches = todayInfo.past4Matches;
+                    tomorrowInfo.previousMatchSummary = todayInfo.previousMatchSummary;
+                }
                 return tomorrowInfo;
             }
         } catch (Exception ignored) {}
@@ -84,7 +98,7 @@ public class IslLiveScoreService {
         return todayInfo;
     }
 
-    private static LiveMatchInfo queryScoreboardUrl(String targetUrl) {
+    private static LiveMatchInfo queryScoreboardUrl(String targetUrl, boolean includeHistory) {
         HttpURLConnection conn = null;
         try {
             URL url = new URL(targetUrl);
@@ -138,12 +152,64 @@ public class IslLiveScoreService {
                 }
             }
 
+            // Collect past 4 completed matches for score history (skipping future calendar dates!)
+            java.util.List<String> pastMatches = new java.util.ArrayList<>();
+            if (includeHistory) {
+                for (int i = events.length() - 1; i >= 0 && pastMatches.size() < 4; i--) {
+                    JSONObject ev = events.optJSONObject(i);
+                    if (ev == null) continue;
+                    JSONObject st = ev.optJSONObject("status");
+                    JSONObject sty = st != null ? st.optJSONObject("type") : null;
+                    String stState = sty != null ? sty.optString("state", "") : "";
+                    if ("post".equalsIgnoreCase(stState)) {
+                        String s = parseCompletedMatch(ev);
+                        if (s != null && !pastMatches.contains(s)) {
+                            pastMatches.add(s);
+                        }
+                    }
+                }
+
+                // If less than 4, query recent completed dates <= today from league calendar
+                if (pastMatches.size() < 4) {
+                    JSONArray leagues = root.optJSONArray("leagues");
+                    if (leagues != null && leagues.length() > 0) {
+                        JSONArray cal = leagues.optJSONObject(0).optJSONArray("calendar");
+                        if (cal != null) {
+                            String todayIso = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString();
+                            for (int c = cal.length() - 1; c >= 0 && pastMatches.size() < 4; c--) {
+                                String calDate = cal.optString(c, "");
+                                if (calDate.length() >= 10) {
+                                    String dateIso = calDate.substring(0, 10);
+                                    if (dateIso.compareTo(todayIso) > 0) continue;
+                                    String dateParam = dateIso.replace("-", "");
+                                    if (!targetUrl.contains("dates=" + dateParam)) {
+                                        queryPastCalendarDate("https://site.api.espn.com/apis/site/v2/sports/soccer/ind.1/scoreboard?dates=" + dateParam, pastMatches);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            String prevSummary = "";
+            if (!pastMatches.isEmpty()) {
+                StringBuilder sbPast = new StringBuilder("PAST 4: ");
+                for (int p = 0; p < pastMatches.size(); p++) {
+                    if (p > 0) sbPast.append(" \u00B7 ");
+                    sbPast.append(pastMatches.get(p));
+                }
+                prevSummary = sbPast.toString();
+            }
+
             if (selectedEvent == null) {
                 selectedEvent = events.optJSONObject(0);
             }
             if (selectedEvent == null) return null;
 
             LiveMatchInfo info = new LiveMatchInfo();
+            info.previousMatchSummary = prevSummary;
+            info.past4Matches = pastMatches;
             JSONObject status = selectedEvent.optJSONObject("status");
             if (status != null) {
                 JSONObject stype = status.optJSONObject("type");
@@ -196,5 +262,68 @@ public class IslLiveScoreService {
             }
         }
         return null;
+    }
+
+    private static String parseCompletedMatch(JSONObject ev) {
+        if (ev == null) return null;
+        JSONArray comps = ev.optJSONArray("competitions");
+        if (comps != null && comps.length() > 0) {
+            JSONObject cmp = comps.optJSONObject(0);
+            JSONArray cmps = cmp != null ? cmp.optJSONArray("competitors") : null;
+            if (cmps != null && cmps.length() >= 2) {
+                JSONObject k0 = cmps.optJSONObject(0);
+                JSONObject k1 = cmps.optJSONObject(1);
+                if (k0 != null && k1 != null) {
+                    JSONObject tm0 = k0.optJSONObject("team");
+                    JSONObject tm1 = k1.optJSONObject("team");
+                    String n0 = tm0 != null ? tm0.optString("shortDisplayName", tm0.optString("displayName", "")) : "";
+                    String n1 = tm1 != null ? tm1.optString("shortDisplayName", tm1.optString("displayName", "")) : "";
+                    String sc0 = k0.optString("score", "0");
+                    String sc1 = k1.optString("score", "0");
+                    return n0 + " " + sc0 + " - " + sc1 + " " + n1 + " (FT)";
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void queryPastCalendarDate(String pastUrl, java.util.List<String> targetList) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(pastUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            if (conn.getResponseCode() == 200) {
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+                }
+                JSONObject root = new JSONObject(sb.toString());
+                JSONArray evs = root.optJSONArray("events");
+                if (evs != null) {
+                    for (int i = 0; i < evs.length() && targetList.size() < 4; i++) {
+                        JSONObject ev = evs.optJSONObject(i);
+                        if (ev == null) continue;
+                        JSONObject st = ev.optJSONObject("status");
+                        JSONObject sty = st != null ? st.optJSONObject("type") : null;
+                        if (sty != null && "post".equalsIgnoreCase(sty.optString("state", ""))) {
+                            String s = parseCompletedMatch(ev);
+                            if (s != null && !targetList.contains(s)) {
+                                targetList.add(s);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) {
+                try { conn.disconnect(); } catch (Exception ignored) {}
+            }
+        }
     }
 }
