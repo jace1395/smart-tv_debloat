@@ -231,6 +231,11 @@ public class HomeKeyService extends AccessibilityService {
                         return;
                     }
                     if ("com.amazon.firehomestarter".equals(pkgStr) || clsStr.contains("HomeActivity") || clsStr.contains("BuellerApplication")) {
+                        if (SmartMatchDirector.getInstance(this).getSportzfyAutoPilot().isNavigating()
+                                || isStreamingAppInForeground(this)) {
+                            Log.i(TAG, "Streaming app or Auto-Pilot active, skipping home redirect");
+                            return;
+                        }
                         Log.i(TAG, "Fire OS stock launcher appeared (" + pkgStr + " / " + clsStr + ") -> Redirecting to custom launcher");
                         launchHome();
                         return;

@@ -240,15 +240,13 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
                     + " isHdmiActive=" + isHdmiActive);
         }
 
-        // Check if currently tracked match explicitly ended ("post") -> clear it so queue advances!
+        // Check if currently tracked match explicitly ended ("post") or duration elapsed -> clear it so queue advances!
         if (activeMatchKey != null) {
             FootballScheduleService.FootballMatch activeState = findMatchByKey(queue, activeMatchKey);
-            boolean finished = activeState != null && activeState.isFinished();
-            boolean stoppedPlayback = isCurrentPlaybackDead(now);
-            if (finished || stoppedPlayback) {
-                Log.i(TAG, "Active match finished or stopped (finished=" + finished
-                        + ", stopped=" + stoppedPlayback + "): " + activeMatchKey);
-                matchRetryCooldownUntil.put(activeMatchKey, now + (finished ? 6 * 3600_000L : RETRY_FAILED_LIVE_MS));
+            boolean finished = isCurrentMatchOver(now, activeState);
+            if (finished) {
+                Log.i(TAG, "Active match finished: " + activeMatchKey + " -> Advancing queue to next match");
+                matchRetryCooldownUntil.put(activeMatchKey, now + 6 * 3600_000L);
                 activeMatchKey = null;
                 activeMatchTier = Integer.MAX_VALUE;
                 activePlatform = "";
@@ -268,14 +266,25 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
 
         String candidateKey = candidate.queueKey();
 
-        // Already playing this match smoothly (and not interrupted by a higher priority match)
+        // Already playing this match smoothly
         if (candidateKey.equals(activeMatchKey)) {
             return;
         }
 
-        // Do not preempt an ongoing same-or-higher priority match
-        if (activeMatchKey != null && candidate.priorityTier >= activeMatchTier) {
-            return;
+        // Do not preempt an ongoing match!
+        // "don't do tht when a match is playing let it get over and then only switch to the next football match!"
+        if (activeMatchKey != null) {
+            // If the active match is ISL (Tier 1) or Indian Football Team (Tier 2), NOTHING can preempt it!
+            if (activeMatchTier <= FootballScheduleService.TIER_INDIA) {
+                Log.d(TAG, "Active Priority " + activeMatchTier + " match is playing (" + activeMatchKey + "). Holding stream until match is over.");
+                return;
+            }
+            // If the active match is Tier 3 (other football), only a strictly higher tier (Tier 1 ISL or Tier 2 India)
+            // can preempt it; never switch to another Tier 3 match while one is playing!
+            if (candidate.priorityTier >= activeMatchTier) {
+                Log.d(TAG, "Current match playing (" + activeMatchKey + "). Letting it finish before next T" + candidate.priorityTier + " match.");
+                return;
+            }
         }
 
         // Check if Uncle explicitly switched away from this exact match back to Tata Sky
@@ -294,34 +303,58 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
             List<FootballScheduleService.FootballMatch> queue, long now) {
         for (FootballScheduleService.FootballMatch m : queue) {
             if (m.isFinished()) continue;
-            boolean live = m.isExplicitlyLive() || isPastKickoffFallback(m, now);
-            if (!live) continue;
+
+            // Must be within 7 minutes before kickoff or actively live
+            if (!m.isEligibleToStream(now)) continue;
 
             Long cd = matchRetryCooldownUntil.get(m.queueKey());
             if (cd != null && now < cd) continue;
+
+            // If this is a Tier 3 ("other football teams") match, ensure a higher priority Tier 1 (ISL)
+            // or Tier 2 (Indian football team) match is not active or scheduled to start within the next 45 minutes!
+            if (m.priorityTier >= FootballScheduleService.TIER_OTHER_FOOTBALL) {
+                if (isHigherPriorityMatchActiveOrUpcoming(queue, now, m.priorityTier)) {
+                    Log.d(TAG, "Holding queue: Higher priority match (ISL/India) active or kicking off soon. Suppressing T3: " + m.title);
+                    continue;
+                }
+            }
 
             return m;
         }
         return null;
     }
 
-    private static boolean isPastKickoffFallback(FootballScheduleService.FootballMatch m, long now) {
-        if (!"pre".equalsIgnoreCase(m.state) || m.startTimeMs <= 0) return false;
-        // Wait 90s past kickoff if ESPN stays "pre" so Sportzfy links are ready
-        return m.isWithinKickoffWindow(now) && now >= (m.startTimeMs + 90_000L);
+    private boolean isHigherPriorityMatchActiveOrUpcoming(
+            List<FootballScheduleService.FootballMatch> queue, long now, int currentTier) {
+        for (FootballScheduleService.FootballMatch m : queue) {
+            if (m.priorityTier < currentTier && !m.isFinished()) {
+                if (m.isExplicitlyLive() || m.isEligibleToStream(now)) {
+                    return true;
+                }
+                if (m.startTimeMs > 0) {
+                    long delta = m.startTimeMs - now;
+                    if (delta > 0 && delta <= 45 * 60_000L) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
-    private boolean isCurrentPlaybackDead(long now) {
-        if (activeMatchKey == null) return false;
-        // Allow 45s warm-up after launch before judging audio playback
-        if (now - activeLaunchTimeMs < 45_000L) return false;
-        String pkg = HomeKeyService.sCurrentPackage;
-        if ("sportzfy".equals(activePlatform) && !SportzfyAutoPilot.PKG_SPORTZFY.equals(pkg) && !isLauncherForeground) {
-            return false; // Uncle might be using another app intentionally
+    private boolean isCurrentMatchOver(long now, FootballScheduleService.FootballMatch activeState) {
+        if (activeMatchKey == null) return true;
+        // 1. Confirmed completed by ESPN scoreboard
+        if (activeState != null && activeState.isFinished()) {
+            return true;
         }
-        AudioManager am = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
-        if ("sportzfy".equals(activePlatform) && SportzfyAutoPilot.PKG_SPORTZFY.equals(pkg) && am != null) {
-            return !am.isMusicActive();
+        // 2. Full match duration elapsed (115 minutes from launch / kickoff)
+        long elapsedSinceLaunch = now - activeLaunchTimeMs;
+        long durationMs = FootballScheduleService.FootballMatch.MATCH_DURATION_MS; // 115 mins
+        if (elapsedSinceLaunch >= durationMs) {
+            if (activeState == null || activeState.startTimeMs <= 0 || now >= (activeState.startTimeMs + durationMs)) {
+                return true;
+            }
         }
         return false;
     }
@@ -339,17 +372,12 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
         activeMatchTier = match.priorityTier;
         activeLaunchTimeMs = System.currentTimeMillis();
 
-        // Only trigger HDMI switch if TV is NOT currently showing our Fire Stick / Custom Launcher
-        long delayMs = 0L;
-        if (!isHdmiActive) {
-            switchTvInputToFireStick();
-            delayMs = HOME_SETTLE_DELAY_MS;
-        } else if (!isLauncherForeground && attachedService != null) {
-            wakeFireStickScreen();
-        }
+        // 7 minutes before match starts: switch TV input from Tata Sky to Fire Stick and immediately open stream
+        Log.i(TAG, "Directing 7-minute pre-match stream for: " + match.title + " (T" + match.priorityTier + ")");
+        switchTvInputToFireStick();
 
-        final long startDelay = delayMs;
-        handler.postDelayed(() -> dispatchMatchStream(match), startDelay);
+        // Delay 1200ms for HDMI CEC input switch to settle, then IMMEDIATELY open Sportzfy/stream
+        handler.postDelayed(() -> dispatchMatchStream(match), 1200L);
     }
 
     @SuppressWarnings("deprecation")
@@ -368,11 +396,9 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
     }
 
     private void switchTvInputToFireStick() {
-        Log.i(TAG, "TV is on external input (Tata Sky) -> waking Fire Stick + CEC OneTouchPlay HOME");
+        Log.i(TAG, "Asserting HDMI 1 Active Source (switching TV from Tata Sky -> Fire Stick)");
         wakeFireStickScreen();
-        if (attachedService != null) {
-            attachedService.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME);
-        }
+        MatchAutoWakeReceiver.assertHdmiActiveSourceSilent(appContext);
     }
 
     private void dispatchMatchStream(FootballScheduleService.FootballMatch match) {
@@ -439,8 +465,14 @@ public class SmartMatchDirector implements SportzfyAutoPilot.Listener {
     public void onSportzfyFailed(String reason) {
         Log.w(TAG, "Sportzfy Auto-Pilot failed (" + reason + ") for activeMatch=" + activeMatchKey);
         if (activeMatchKey != null) {
-            long delay = reason != null && reason.startsWith("no_links_available")
-                    ? RETRY_FAILED_PRE_MS : RETRY_FAILED_LIVE_MS;
+            long delay;
+            if (activeMatchTier <= FootballScheduleService.TIER_INDIA) {
+                // Priority 1 (ISL) and Priority 2 (India): retry quickly (45s) instead of long cooldown!
+                delay = 45_000L;
+            } else {
+                delay = reason != null && reason.startsWith("no_links_available")
+                        ? RETRY_FAILED_PRE_MS : RETRY_FAILED_LIVE_MS;
+            }
             matchRetryCooldownUntil.put(activeMatchKey, System.currentTimeMillis() + delay);
             activeMatchKey = null;
             activeMatchTier = Integer.MAX_VALUE;

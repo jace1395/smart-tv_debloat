@@ -35,6 +35,8 @@ public class FootballScheduleServiceTest {
         assertFalse(FootballScheduleService.isIndiaTeam("Independiente Petrolero"));
         assertFalse(FootballScheduleService.isIndiaTeam("Indiana Hoosiers"));
         assertTrue(FootballScheduleService.isIndiaTeam("India"));
+        assertTrue(FootballScheduleService.isIndiaTeam("Indian"));
+        assertTrue(FootballScheduleService.isIndiaTeam("Indian Football Team"));
         assertTrue(FootballScheduleService.isIndiaTeam("India Women"));
 
         assertFalse(FootballScheduleService.isIslText("Carlisle United vs Isle of Man"));
@@ -50,14 +52,17 @@ public class FootballScheduleServiceTest {
                 "1", "India vs Maldives", "India", "Maldives", "group-stage",
                 kickoff, "pre", FootballScheduleService.TIER_INDIA, 4);
 
-        assertFalse(preIndia.isWithinKickoffWindow(kickoff - 300_000L)); // 5 min early
-        assertTrue(preIndia.isWithinKickoffWindow(kickoff + 120_000L));  // 2 min after kickoff
-        assertFalse(preIndia.isWithinKickoffWindow(kickoff + 130 * 60_000L)); // way past match
+        assertFalse(preIndia.isEligibleToStream(kickoff - 30 * 60_000L)); // 30 min early: DO NOT launch/switch
+        assertFalse(preIndia.isEligibleToStream(kickoff - 8 * 60_000L));  // 8 min early: not eligible yet
+        assertTrue(preIndia.isEligibleToStream(kickoff - 7 * 60_000L));   // Exactly 7 min early: ELIGIBLE!
+        assertTrue(preIndia.isEligibleToStream(kickoff - 5 * 60_000L));   // 5 min early: eligible
+        assertTrue(preIndia.isEligibleToStream(kickoff + 120_000L));       // 2 min after kickoff: eligible
+        assertFalse(preIndia.isEligibleToStream(kickoff + 130 * 60_000L)); // 130 min later: match cycle over
 
         FootballScheduleService.FootballMatch postIndia = new FootballScheduleService.FootballMatch(
                 "1", "India vs Maldives", "India", "Maldives", "group-stage",
                 kickoff, "post", FootballScheduleService.TIER_INDIA, 4);
-        assertFalse(postIndia.isWithinKickoffWindow(kickoff + 120_000L));
+        assertFalse(postIndia.isEligibleToStream(kickoff + 120_000L));
     }
 
     @Test

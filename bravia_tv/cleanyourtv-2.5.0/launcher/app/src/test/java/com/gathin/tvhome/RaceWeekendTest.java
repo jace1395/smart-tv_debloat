@@ -28,15 +28,15 @@ public class RaceWeekendTest {
 
     @Test
     public void nothingBeforeTheWeekendOpens() {
-        assertNull(RaceWeekend.at(CALENDAR, Instant.parse("2026-10-23T05:29:00Z")));
+        assertNull(RaceWeekend.at(CALENDAR, Instant.parse("2026-10-20T17:29:00Z")));
     }
 
     @Test
-    public void opensTwelveHoursBeforeFirstPractice() {
-        RaceWeekend.State s = RaceWeekend.at(CALENDAR, Instant.parse("2026-10-23T05:30:00Z"));
+    public void opensSeventyTwoHoursBeforeFirstPractice() {
+        RaceWeekend.State s = RaceWeekend.at(CALENDAR, Instant.parse("2026-10-20T17:30:00Z"));
         assertSame(AUSTIN, s.race);
         assertEquals("FP1", s.next.name);
-        assertEquals(Duration.ofHours(12), s.untilNext);
+        assertEquals(Duration.ofHours(72), s.untilNext);
         assertEquals(RaceWeekend.Status.NEXT, s.statuses.get(0));
         assertEquals(RaceWeekend.Status.LATER, s.statuses.get(4));
     }

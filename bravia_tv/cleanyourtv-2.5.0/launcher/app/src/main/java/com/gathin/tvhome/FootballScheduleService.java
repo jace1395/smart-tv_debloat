@@ -46,9 +46,10 @@ public final class FootballScheduleService {
     private static final String ALL_SCOREBOARD_FMT =
             "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates=%s";
 
-    private static final long MATCH_WINDOW_MS = 115L * 60L * 1000L; // ~115 mins from kickoff
+    public static final long PRE_KICKOFF_LEAD_MS = 7 * 60 * 1000L; // Exactly 7 minutes before kickoff
+    public static final long MATCH_WINDOW_MS = 115L * 60L * 1000L; // ~115 mins from kickoff
     private static final Pattern INDIA_WORD_PATTERN =
-            Pattern.compile("\\bindia\\b", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("\\bindia(n)?\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern ISL_WORD_PATTERN =
             Pattern.compile("\\bisl\\b", Pattern.CASE_INSENSITIVE);
 
@@ -86,6 +87,9 @@ public final class FootballScheduleService {
             this.competitionRank = competitionRank;
         }
 
+        public static final long PRE_KICKOFF_LEAD_MS = 7 * 60 * 1000L; // 7 minutes before kickoff
+        public static final long MATCH_DURATION_MS = 115L * 60L * 1000L; // ~115 mins match duration
+
         public String queueKey() {
             return "T" + priorityTier + ":" + title.toLowerCase(Locale.ROOT).trim();
         }
@@ -99,6 +103,18 @@ public final class FootballScheduleService {
         }
 
         /**
+         * Match is in the active streaming window:
+         * Starts exactly 7 minutes before kickoff and stays eligible until full match duration ends.
+         */
+        public boolean isEligibleToStream(long nowMs) {
+            if (isFinished()) return false;
+            if (isExplicitlyLive()) return true;
+            if (startTimeMs <= 0) return false;
+            return nowMs >= (startTimeMs - PRE_KICKOFF_LEAD_MS)
+                    && nowMs <= (startTimeMs + MATCH_DURATION_MS);
+        }
+
+        /**
          * Some regional competitions (such as SAFF Championship) may keep ESPN state="pre"
          * right up to or past kickoff while streaming live on Sportzfy/FanCode.
          */
@@ -106,11 +122,9 @@ public final class FootballScheduleService {
             if (isFinished()) return false;
             if (isExplicitlyLive()) return true;
             if (startTimeMs <= 0) return false;
-            boolean allowWindowFallback = priorityTier <= TIER_INDIA || competitionRank >= 2;
-            return allowWindowFallback
-                    && "pre".equalsIgnoreCase(state)
-                    && nowMs >= (startTimeMs - 90_000L)
-                    && nowMs <= (startTimeMs + MATCH_WINDOW_MS);
+            return "pre".equalsIgnoreCase(state)
+                    && nowMs >= (startTimeMs - PRE_KICKOFF_LEAD_MS)
+                    && nowMs <= (startTimeMs + MATCH_DURATION_MS);
         }
     }
 
